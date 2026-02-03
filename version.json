@@ -4,7 +4,7 @@
   "release_date": "2025-02-03",
   "release_notes": "Initial OTA-enabled release",
   "critical": false,
-  "firmware_size": 0,
+  "firmware_size": 1144512,
   "changelog": [
     "Added OTA update capability",
     "Telegram commands: /version, /update, /install",
