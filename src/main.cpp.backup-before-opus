@@ -1,0 +1,1486 @@
+/*
+ * =====================================================
+ * FRIYAY FOREVER - Protocol 1.0 (v24 - BACK TO BASICS)
+ * For ESP32-8048S043C (4.3" 800x480 RGB Display)
+ * =====================================================
+ * 
+ * Going back to TAMC_GT911 library with pin 18 for INT
+ * Adding extensive debug output to diagnose issues
+ */
+
+ #include <Arduino.h>
+ #include <Arduino_GFX_Library.h>
+ #include <WiFi.h>
+ #include <WebServer.h>
+ #include <DNSServer.h>
+ #include <HTTPClient.h>
+ #include <ArduinoJson.h>
+ #include <WiFiClientSecure.h>
+ #include <UniversalTelegramBot.h>
+ #include <time.h>
+ #include <Wire.h>
+ #include <Preferences.h>
+ #include <TAMC_GT911.h>
+ 
+ // ============================================================
+ // CONFIGURATION - CHANGE THESE FOR EACH UNIT
+ // ============================================================
+ 
+ #define MY_FRIEND_INDEX 0  // 0=NM, 1=ST, 2=GO, 3=TD, 4=MD
+ 
+ #define BOT_TOKEN "8274851974:AAEao868jidxcQEnY8IxPK91ujLmOsA_Alg"
+ 
+ struct Friend {
+   const char* initials;
+   int64_t telegramId;
+  const char* firstName;
+   bool committed;
+ };
+ 
+ Friend friends[] = {
+   {"NM", "Nathan", 7612996805LL, false},
+   {"ST", "Stephen", 7015581601LL, false},
+   {"GO", "Garrett", 0LL, false},
+   {"TD", "Tyler", 8293810017LL, false},
+   {"MD", 0LL, false}
+ };
+ #define NUM_FRIENDS 5
+ 
+ #define LATITUDE 35.9132
+ #define LONGITUDE -79.0558
+ 
+ // ============================================================
+ // PIN DEFINITIONS - ESP32-8048S043C (from working README)
+ // ============================================================
+ #define GFX_BL 2
+ #define MQ135_PIN 12
+ 
+ // GT911 Touch - Using pins from README
+ #define TOUCH_SDA 19
+ #define TOUCH_SCL 20
+ #define TOUCH_INT 18
+ #define TOUCH_RST 38
+ 
+ // ============================================================
+ // DISPLAY SETUP - ESP32-8048S043C
+ // ============================================================
+ Arduino_ESP32RGBPanel *rgbpanel = new Arduino_ESP32RGBPanel(
+     40 /* DE */, 41 /* VSYNC */, 39 /* HSYNC */, 42 /* PCLK */,
+     45 /* R0 */, 48 /* R1 */, 47 /* R2 */, 21 /* R3 */, 14 /* R4 */,
+     5 /* G0 */, 6 /* G1 */, 7 /* G2 */, 15 /* G3 */, 16 /* G4 */, 4 /* G5 */,
+     8 /* B0 */, 3 /* B1 */, 46 /* B2 */, 9 /* B3 */, 1 /* B4 */,
+     0 /* hsync_polarity */, 8 /* hsync_front_porch */, 4 /* hsync_pulse_width */, 8 /* hsync_back_porch */,
+     0 /* vsync_polarity */, 8 /* vsync_front_porch */, 4 /* vsync_pulse_width */, 8 /* vsync_back_porch */,
+     1 /* pclk_active_neg */, 16000000 /* prefer_speed */
+ );
+ 
+ Arduino_RGB_Display *gfx = new Arduino_RGB_Display(800, 480, rgbpanel);
+ 
+ // ============================================================
+ // GT911 TOUCH - USING TAMC_GT911 LIBRARY
+ // ============================================================
+ TAMC_GT911 ts = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, 800, 480);
+ 
+ // ============================================================
+ // COLORS (RGB565)
+ // ============================================================
+ #define COL_BLACK       0x0000
+ #define COL_WHITE       0xFFFF
+ #define COL_YELLOW      0xFEA0
+ #define COL_CYAN        0x07FF
+ #define COL_GREEN       0x3CA4
+ #define COL_VU_GREEN    0x07E0
+ #define COL_RED         0xF800
+ #define COL_ORANGE      0xFC40
+ #define COL_GRAY        0x52AA
+ #define COL_DARK_GRAY   0x31A6
+ #define COL_SPOTIFY_BG  0x1807
+ #define COL_SCANNER     0x055F
+ 
+ // ============================================================
+ // LAYOUT (800x480)
+ // ============================================================
+ #define SCREEN_W 800
+ #define SCREEN_H 480
+ #define MARGIN 15
+ 
+ #define NOTIF_W 270
+ #define NOTIF_H 50
+ #define NOTIF_X (SCREEN_W - NOTIF_W - MARGIN)
+ #define NOTIF_Y MARGIN
+ 
+ #define BTN_Y 10
+ #define BTN_H 50
+ #define BTN_W 60
+ #define BTN_GAP 6
+ #define COMMIT_W 80
+ 
+ #define BOTTOM_LINE (SCREEN_H - MARGIN)
+ 
+ #define ALBUM_ART_W 225
+ #define ALBUM_ART_H 280
+ #define SPOT_HEADER_H 45
+ #define SPOT_TOTAL_H (SPOT_HEADER_H + ALBUM_ART_H)
+ #define SPOT_BOTTOM BOTTOM_LINE
+ #define SPOT_TOP (SPOT_BOTTOM - SPOT_TOTAL_H)
+ #define ART_X (SCREEN_W - ALBUM_ART_W - MARGIN)
+ #define ART_AREA_Y (SPOT_TOP + SPOT_HEADER_H)
+ 
+ #define VU_W 38
+ #define VU_GAP 10
+ #define VU_TOTAL_W (VU_W * 2 + VU_GAP)
+ #define ELEMENT_GAP 15
+ #define VU_X (ART_X - ELEMENT_GAP - VU_TOTAL_W)
+ #define VU_TOP SPOT_TOP
+ #define VU_BOTTOM BOTTOM_LINE
+ #define VU_H (VU_BOTTOM - VU_TOP)
+ 
+ #define TIMER_H 140
+ #define TIMER_BOTTOM BOTTOM_LINE
+ #define TIMER_Y (TIMER_BOTTOM - TIMER_H)
+ #define TIMER_X MARGIN
+ #define TIMER_W (VU_X - ELEMENT_GAP - MARGIN)
+ 
+ #define PANEL_X MARGIN
+ #define PANEL_TOP SPOT_TOP
+ #define PANEL_BOTTOM (TIMER_Y - 8)
+ #define PANEL_H (PANEL_BOTTOM - PANEL_TOP)
+ #define PANEL_W TIMER_W
+ #define PANEL_Y PANEL_TOP
+ 
+ #define DAY_H 28
+ #define DAYS_Y (PANEL_TOP - 5 - DAY_H)
+ 
+ #define HEADER_Y (DAYS_Y + DAY_H / 2)
+ 
+ #define WEATHER_START_Y (PANEL_Y + 15)
+ #define WEATHER_ROW_GAP ((PANEL_H - 25) / 3)
+ #define BLOCK_SIZE 28
+ #define BLOCK_GAP 4
+ 
+ // ============================================================
+ // GLOBAL STATE
+ // ============================================================
+ 
+ Preferences prefs;
+ String savedSSID = "";
+ String savedPass = "";
+ bool wifiOK = false;
+ bool inSetup = false;
+ 
+ WebServer server(80);
+ DNSServer dns;
+ bool kbVisible = false;
+ String kbInput = "";
+ bool capsOn = false;
+ int selNetwork = -1;
+ String networks[15];
+ int netCount = 0;
+ 
+ float currTemp = 70;
+ float precipitation = 0;
+ int wetLvl = 5;
+ int tmpLvl = 5;
+ int fukLvl = 5;
+ bool weatherOK = false;
+ 
+ int aqiLvl = 5;
+ int co2Lvl = 5;
+ 
+ struct tm tinfo;
+ int dayOfWeek = 0;
+ long secToFri = 0;
+ int hrsLeft = 0;
+ int minLeft = 0;
+ int secLeft = 0;
+ 
+ String currMsg = "";
+ bool newMsg = false;
+ unsigned long msgTime = 0;
+ bool showingMsg = false;
+ int msgScrollPos = 0;
+ 
+ bool scannerActive = false;
+ int scannerPos = 4;
+ int scannerDirection = 1;
+ int scannerBounces = 0;
+ #define MAX_BOUNCES 8
+ #define SCANNER_SPEED 8
+ 
+ bool hasSpotify = false;
+ String trackId = "";
+ 
+ // Touch variables
+ int touchX = 0, touchY = 0;
+ unsigned long lastTouch = 0;
+ bool touchOK = false;
+ 
+
+// Touch state machine for proper press/release detection
+enum TouchState { TOUCH_IDLE, TOUCH_PRESSED, TOUCH_HELD };
+TouchState touchState = TOUCH_IDLE;
+bool wasTouched = false;
+int savedTouchX = 0, savedTouchY = 0;
+ int wifiStrength = 4;
+ bool profileActive = true;
+ 
+ unsigned long lastWeather = 0;
+ unsigned long lastBot = 0;
+ unsigned long lastDisp = 0;
+ unsigned long lastSensor = 0;
+ unsigned long lastAnim = 0;
+ 
+ WiFiClientSecure client;
+ UniversalTelegramBot bot(BOT_TOKEN, client);
+ 
+ // ============================================================
+ // FUNCTION PROTOTYPES
+ // ============================================================
+ void showSplash();
+ void initTouch();
+ bool checkTouch();
+ void handleTouch();
+ void handleSetupTouch();
+ void handleKBTouch();
+ void toggleCommit();
+ void drawUI();
+ void drawButtons();
+ void drawNotificationBox();
+ void drawDays();
+ void drawWeatherPanel();
+ void drawWeatherBars();
+ void drawTimer();
+ void drawVUMeters();
+ void drawMeter(int x, int y, int w, int h, int level, const char* label);
+ void drawHeader();
+ void drawWifiIcon(int x, int y);
+ void drawProfileIcon(int x, int y);
+ void drawSpotifyArea();
+ void startWiFiSetup();
+ void drawNetList();
+ void drawKeyboard();
+ void doConnect();
+ void tryConnect();
+ void handleRoot();
+ void checkTelegram();
+ void showMessage(String msg);
+ int getFriendIdx(int64_t id);
+ void broadcast(String msg);
+ void parseSpotify(String text);
+ void getWeather();
+ void calcWeather();
+ void readSensors();
+ void calcCountdown();
+ void checkReset();
+ void updateAnimations();
+ void drawTouchDebug();
+ 
+ // ============================================================
+ // TOUCH INITIALIZATION
+ // ============================================================
+ 
+ void initTouch() {
+   Serial.println("   Starting GT911 init...");
+   
+   Wire.begin(TOUCH_SDA, TOUCH_SCL);
+   Serial.println("   Wire.begin() done");
+   
+   ts.begin();
+   Serial.println("   ts.begin() done");
+   
+   ts.setRotation(ROTATION_NORMAL);
+   Serial.println("   ts.setRotation() done");
+   
+   touchOK = true;
+   Serial.println("   GT911 initialized!");
+}
+
+// ============================================================
+// TOUCH READING
+// ============================================================
+
+bool checkTouch() {
+  if (!touchOK) return false;
+
+  ts.read();
+  bool currentlyTouched = ts.isTouched;
+
+  // State machine for proper press/release detection
+  switch (touchState) {
+    case TOUCH_IDLE:
+      if (currentlyTouched && !wasTouched) {
+        // Finger just touched - save coordinates
+        int rawX = ts.points[0].x;
+        int rawY = ts.points[0].y;
+
+        // CALIBRATED MAPPING
+        savedTouchX = map(rawX, 792, 325, 0, 800);
+        savedTouchY = map(rawY, 471, 209, 0, 480);
+        savedTouchX = constrain(savedTouchX, 0, SCREEN_W - 1);
+        savedTouchY = constrain(savedTouchY, 0, SCREEN_H - 1);
+
+        touchState = TOUCH_PRESSED;
+        wasTouched = true;
+
+        Serial.printf("Touch PRESS: x=%d, y=%d\n", savedTouchX, savedTouchY);
+      }
+      break;
+
+    case TOUCH_PRESSED:
+      if (!currentlyTouched) {
+        // Finger released - trigger action NOW
+        touchX = savedTouchX;
+        touchY = savedTouchY;
+        touchState = TOUCH_IDLE;
+        wasTouched = false;
+
+        Serial.printf("Touch RELEASE: x=%d, y=%d\n", touchX, touchY);
+        return true;
+      }
+      break;
+
+    case TOUCH_HELD:
+      if (!currentlyTouched) {
+        touchState = TOUCH_IDLE;
+        wasTouched = false;
+      }
+      break;
+  }
+
+  return false;
+}
+ 
+ // ============================================================
+ // TOUCH DEBUG
+ // ============================================================
+ 
+ void drawTouchDebug() {
+   gfx->fillCircle(touchX, touchY, 10, COL_RED);
+ }
+ 
+ // ============================================================
+ // SETUP
+ // ============================================================
+ 
+ void setup() {
+   Serial.begin(115200);
+   delay(500);  // Give serial time to initialize
+   
+   Serial.println();
+   Serial.println("========================================");
+   Serial.println("  FRIYAY FOREVER Protocol 1.0 - v24");
+   Serial.println("  BACK TO BASICS - DEBUG VERSION");
+   Serial.println("========================================");
+   Serial.printf("Unit owner: %s\n\n", friends[MY_FRIEND_INDEX].initials);
+ 
+   Serial.println("[1/5] Init display...");
+   gfx->begin();
+   gfx->fillScreen(COL_BLACK);
+   pinMode(GFX_BL, OUTPUT);
+   digitalWrite(GFX_BL, HIGH);
+   Serial.println("   Display OK");
+   
+   showSplash();
+   
+   Serial.println("[2/5] Init touch...");
+   initTouch();
+   
+   Serial.println("[3/5] Init sensor...");
+   pinMode(MQ135_PIN, INPUT);
+   analogReadResolution(12);
+   Serial.println("   Sensor OK");
+   
+   Serial.println("[4/5] Check WiFi...");
+   prefs.begin("friyay", false);
+   savedSSID = prefs.getString("ssid", "");
+   savedPass = prefs.getString("pass", "");
+   Serial.printf("   Saved SSID: %s\n", savedSSID.c_str());
+   
+   if (savedSSID.length() > 0) {
+     tryConnect();
+   }
+   
+   if (!wifiOK) {
+     Serial.println("   Starting WiFi setup...");
+     startWiFiSetup();
+     return;
+   }
+   
+   Serial.println("[5/5] Sync time...");
+   configTime(-5 * 3600, 3600, "pool.ntp.org");
+   
+   int tries = 0;
+   while (!getLocalTime(&tinfo) && tries < 15) {
+     delay(500);
+     tries++;
+   }
+   Serial.println("   Time synced");
+   
+   client.setInsecure();
+   getWeather();
+   
+   int rssi = WiFi.RSSI();
+   if (rssi >= -50) wifiStrength = 4;
+   else if (rssi >= -60) wifiStrength = 3;
+   else if (rssi >= -70) wifiStrength = 2;
+   else wifiStrength = 1;
+   
+   drawUI();
+   
+   Serial.println();
+   Serial.println("========================================");
+   Serial.println("  READY! Touch the screen to test.");
+   Serial.println("========================================");
+   Serial.println();
+ }
+ 
+ // ============================================================
+ // MAIN LOOP
+ // ============================================================
+ 
+ void loop() {
+   if (inSetup) {
+     dns.processNextRequest();
+     server.handleClient();
+     if (checkTouch()) {
+       drawTouchDebug();
+       handleSetupTouch();
+     }
+     delay(10);
+     return;
+   }
+   
+   unsigned long now = millis();
+   
+   if (now - lastAnim >= 16) {
+     lastAnim = now;
+     updateAnimations();
+   }
+   
+   if (now - lastDisp >= 1000) {
+     lastDisp = now;
+     getLocalTime(&tinfo);
+     dayOfWeek = tinfo.tm_wday;
+     calcCountdown();
+     drawTimer();
+     
+     if (WiFi.status() == WL_CONNECTED) {
+       int rssi = WiFi.RSSI();
+       int newStrength = rssi >= -50 ? 4 : rssi >= -60 ? 3 : rssi >= -70 ? 2 : 1;
+       if (newStrength != wifiStrength) {
+         wifiStrength = newStrength;
+         drawHeader();
+       }
+     }
+     
+     checkReset();
+   }
+   
+   if (checkTouch()) {
+     drawTouchDebug();
+     handleTouch();
+   }
+   
+   if (now - lastBot >= 2000) {
+     lastBot = now;
+     checkTelegram();
+   }
+   
+   if (now - lastWeather >= 3600000) {
+     lastWeather = now;
+     getWeather();
+     drawWeatherBars();
+   }
+   
+   if (now - lastSensor >= 5000) {
+     lastSensor = now;
+     readSensors();
+     drawVUMeters();
+   }
+   
+   if (WiFi.status() != WL_CONNECTED) {
+     wifiOK = false;
+     tryConnect();
+     if (!wifiOK) startWiFiSetup();
+   }
+   
+   delay(10);
+ }
+ 
+ // ============================================================
+ // ANIMATION UPDATE
+ // ============================================================
+ 
+ void updateAnimations() {
+   bool needRedraw = false;
+   
+   if (scannerActive) {
+     scannerPos += SCANNER_SPEED * scannerDirection;
+     
+     if (scannerDirection == 1 && scannerPos >= NOTIF_W - 10) {
+       scannerDirection = -1;
+       scannerBounces++;
+       scannerPos = NOTIF_W - 10;
+     } else if (scannerDirection == -1 && scannerPos <= 4) {
+       scannerDirection = 1;
+       scannerBounces++;
+       scannerPos = 4;
+     }
+     
+     if (scannerBounces >= MAX_BOUNCES) {
+       scannerActive = false;
+       scannerPos = 4;
+       scannerDirection = 1;
+       scannerBounces = 0;
+     }
+     
+     needRedraw = true;
+   }
+   
+   if (showingMsg && currMsg.length() > 20) {
+     msgScrollPos += 2;
+     if (msgScrollPos > (int)currMsg.length() * 18 + TIMER_W) {
+       msgScrollPos = -TIMER_W;
+     }
+     needRedraw = true;
+   }
+   
+   if (needRedraw) {
+     drawNotificationBox();
+     if (showingMsg) drawTimer();
+   }
+ }
+ 
+ // ============================================================
+ // TOUCH HANDLERS
+ // ============================================================
+ 
+ void handleTouch() {
+   if (touchY >= BTN_Y && touchY <= BTN_Y + BTN_H) {
+     int x = MARGIN;
+     for (int i = 0; i < NUM_FRIENDS; i++) {
+       if (touchX >= x && touchX <= x + BTN_W) {
+         if (i == MY_FRIEND_INDEX) {
+           toggleCommit();
+         }
+         return;
+       }
+       x += BTN_W + BTN_GAP;
+     }
+     
+     x += 10;
+     if (touchX >= x && touchX <= x + COMMIT_W) {
+       toggleCommit();
+       return;
+     }
+   }
+ }
+ 
+ void toggleCommit() {
+   friends[MY_FRIEND_INDEX].committed = !friends[MY_FRIEND_INDEX].committed;
+   
+   String msg = friends[MY_FRIEND_INDEX].committed 
+     ? "ðŸ‚ " + String(friends[MY_FRIEND_INDEX].initials) + " is IN!"
+     : "ðŸ˜¢ " + String(friends[MY_FRIEND_INDEX].initials) + " is OUT";
+   
+   broadcast(msg);
+   drawButtons();
+   
+   Serial.printf("Commit toggled: %s\n", friends[MY_FRIEND_INDEX].committed ? "IN" : "OUT");
+ }
+ 
+ // ============================================================
+ // DRAWING FUNCTIONS
+ // ============================================================
+ 
+ void showSplash() {
+   gfx->fillScreen(COL_BLACK);
+   gfx->setTextColor(COL_YELLOW);
+   gfx->setTextSize(4);
+   gfx->setCursor(160, 180);
+   gfx->print("FRIYAY FOREVER");
+   gfx->setTextSize(2);
+   gfx->setTextColor(COL_CYAN);
+   gfx->setCursor(290, 250);
+   gfx->print("Protocol 1.0 v24");
+   gfx->setTextColor(COL_WHITE);
+   gfx->setCursor(320, 300);
+   gfx->print("Unit: ");
+   gfx->print(friends[MY_FRIEND_INDEX].initials);
+   delay(2000);
+ }
+ 
+ void drawUI() {
+   gfx->fillScreen(COL_BLACK);
+   drawButtons();
+   drawNotificationBox();
+   drawDays();
+   drawWeatherPanel();
+   drawWeatherBars();
+   drawTimer();
+   drawVUMeters();
+   drawHeader();
+   drawSpotifyArea();
+ }
+ 
+ void drawButtons() {
+   int x = MARGIN;
+   
+   for (int i = 0; i < NUM_FRIENDS; i++) {
+     if (friends[i].committed) {
+       gfx->fillRoundRect(x, BTN_Y, BTN_W, BTN_H, 6, COL_YELLOW);
+       gfx->setTextColor(COL_BLACK);
+     } else {
+       gfx->fillRoundRect(x, BTN_Y, BTN_W, BTN_H, 6, COL_BLACK);
+       gfx->drawRoundRect(x, BTN_Y, BTN_W, BTN_H, 6, COL_YELLOW);
+       gfx->setTextColor(COL_YELLOW);
+     }
+     
+     gfx->setTextSize(2);
+     int tw = strlen(friends[i].initials) * 12;
+     gfx->setCursor(x + (BTN_W - tw) / 2, BTN_Y + 17);
+     gfx->print(friends[i].initials);
+     
+     x += BTN_W + BTN_GAP;
+   }
+   
+   x += 10;
+   gfx->fillRoundRect(x, BTN_Y, COMMIT_W, BTN_H, 6, COL_YELLOW);
+   gfx->setTextColor(COL_BLACK);
+   gfx->setTextSize(2);
+   gfx->setCursor(x + 8, BTN_Y + 17);
+   gfx->print("Commit");
+ }
+ 
+ void drawNotificationBox() {
+   gfx->fillRect(NOTIF_X - 2, NOTIF_Y - 2, NOTIF_W + 4, NOTIF_H + 4, COL_BLACK);
+   gfx->drawRoundRect(NOTIF_X, NOTIF_Y, NOTIF_W, NOTIF_H, 6, COL_CYAN);
+   gfx->fillRect(NOTIF_X + 2, NOTIF_Y + 2, NOTIF_W - 4, NOTIF_H - 4, 0x0011);
+   
+   if (scannerActive) {
+     for (int g = 0; g < 3; g++) {
+       uint16_t glowColor = gfx->color565(0, 100 - g * 30, 150 - g * 40);
+       gfx->fillRect(NOTIF_X + scannerPos - 10 + g * 3, NOTIF_Y + 3, 
+                     8 - g * 2, NOTIF_H - 6, glowColor);
+     }
+     gfx->fillRect(NOTIF_X + scannerPos, NOTIF_Y + 3, 5, NOTIF_H - 6, COL_SCANNER);
+     gfx->fillRect(NOTIF_X + scannerPos + 1, NOTIF_Y + 3, 2, NOTIF_H - 6, COL_WHITE);
+   }
+   
+   for (int gx = NOTIF_X + 15; gx < NOTIF_X + NOTIF_W - 5; gx += 20) {
+     gfx->drawFastVLine(gx, NOTIF_Y + 3, NOTIF_H - 6, 0x0111);
+   }
+ }
+ 
+ void drawDays() {
+   const char* days[] = {"SAT", "SUN", "MON", "TUE", "WED", "THU", "FRI"};
+   const int dayMap[] = {6, 0, 1, 2, 3, 4, 5};
+   
+   int availableWidth = PANEL_W - 10;
+   int dayW = availableWidth / 7;
+   int x = MARGIN + 5;
+   
+   for (int i = 0; i < 7; i++) {
+     int actualDay = dayMap[i];
+     bool isToday = (actualDay == dayOfWeek);
+     int centerX = x + dayW / 2;
+     
+     if (isToday) {
+       gfx->fillRoundRect(x, DAYS_Y, dayW, DAY_H + 5, 6, COL_YELLOW);
+       gfx->setTextColor(COL_BLACK);
+     } else {
+       gfx->setTextColor(COL_WHITE);
+     }
+     
+     gfx->setTextSize(1);
+     gfx->setCursor(centerX - 9, DAYS_Y + 10);
+     gfx->print(days[i]);
+     
+     x += dayW;
+   }
+ }
+ 
+ void drawWeatherPanel() {
+   gfx->drawRoundRect(PANEL_X, PANEL_Y, PANEL_W, PANEL_H, 8, COL_YELLOW);
+ }
+ 
+ void drawWeatherBars() {
+   gfx->fillRect(PANEL_X + 3, PANEL_Y + 3, PANEL_W - 6, PANEL_H - 6, COL_BLACK);
+   gfx->drawRoundRect(PANEL_X, PANEL_Y, PANEL_W, PANEL_H, 8, COL_YELLOW);
+   
+   const char* labels[] = {"WET", "TMP", "FUK"};
+   int values[] = {wetLvl, tmpLvl, fukLvl};
+   uint16_t labelColors[] = {COL_YELLOW, COL_CYAN, COL_GRAY};
+   char displays[3][10];
+   
+   snprintf(displays[0], sizeof(displays[0]), "%d%%", wetLvl * 10);
+   snprintf(displays[1], sizeof(displays[1]), "%dF", (int)currTemp);
+   snprintf(displays[2], sizeof(displays[2]), "%dRP", fukLvl * 10);
+   
+   int y = WEATHER_START_Y;
+   int labelX = PANEL_X + 15;
+   int barStartX = PANEL_X + 70;
+   int valueX = PANEL_X + PANEL_W - 15;
+   int barWidth = valueX - barStartX - 55;
+   int blockW = (barWidth - BLOCK_GAP * 9) / 10;
+   
+   for (int r = 0; r < 3; r++) {
+     gfx->setTextColor(labelColors[r]);
+     gfx->setTextSize(2);
+     gfx->setCursor(labelX, y + 6);
+     gfx->print(labels[r]);
+     
+     for (int i = 0; i < 10; i++) {
+       int bx = barStartX + i * (blockW + BLOCK_GAP);
+       uint16_t col = (i < values[r]) ? COL_CYAN : COL_DARK_GRAY;
+       gfx->fillRect(bx, y, blockW, BLOCK_SIZE, col);
+     }
+     
+     gfx->setTextColor(COL_YELLOW);
+     gfx->setTextSize(2);
+     int tw = strlen(displays[r]) * 12;
+     gfx->setCursor(valueX - tw, y + 6);
+     gfx->print(displays[r]);
+     
+     y += WEATHER_ROW_GAP;
+   }
+ }
+ 
+ void drawTimer() {
+   gfx->fillRect(TIMER_X, TIMER_Y, TIMER_W, TIMER_H, COL_BLACK);
+   
+   uint16_t borderCol = (newMsg && (millis() - msgTime < 30000)) ? COL_CYAN : COL_YELLOW;
+   gfx->drawRoundRect(TIMER_X, TIMER_Y, TIMER_W, TIMER_H, 8, borderCol);
+   if (newMsg && (millis() - msgTime < 30000)) {
+     gfx->drawRoundRect(TIMER_X + 1, TIMER_Y + 1, TIMER_W - 2, TIMER_H - 2, 7, borderCol);
+   }
+   
+   int centerY = TIMER_Y + TIMER_H / 2;
+   
+   if (showingMsg && currMsg.length() > 0) {
+     gfx->setTextColor(COL_WHITE);
+     gfx->setTextSize(3);
+     
+     if (currMsg.length() <= 20) {
+       int tw = currMsg.length() * 18;
+       gfx->setCursor(TIMER_X + (TIMER_W - tw) / 2, centerY - 12);
+       gfx->print(currMsg);
+     } else {
+       gfx->setCursor(TIMER_X + 20 - msgScrollPos, centerY - 12);
+       gfx->print(currMsg);
+     }
+     
+     if (millis() - msgTime > 12000) {
+       showingMsg = false;
+       currMsg = "";
+       msgScrollPos = 0;
+     }
+   } else if (secToFri <= 0) {
+     gfx->setTextColor(COL_VU_GREEN);
+     gfx->setTextSize(2);
+     gfx->setCursor(TIMER_X + 80, TIMER_Y + 40);
+     gfx->print("SHUT IT DOWN!");
+     gfx->setCursor(TIMER_X + 40, TIMER_Y + 80);
+     gfx->print("GO RIDE WITH YOUR BOYS!");
+   } else {
+     char timeStr[15];
+     snprintf(timeStr, sizeof(timeStr), "%03d:%02d:%02d", hrsLeft, minLeft, secLeft);
+     
+     gfx->setTextColor(COL_WHITE);
+     gfx->setTextSize(6);
+     int tw = strlen(timeStr) * 36;
+     gfx->setCursor(TIMER_X + (TIMER_W - tw) / 2, centerY - 24);
+     gfx->print(timeStr);
+   }
+ }
+ 
+ void drawVUMeters() {
+   drawMeter(VU_X, VU_TOP, VU_W, VU_H, aqiLvl, "AQI");
+   drawMeter(VU_X + VU_W + VU_GAP, VU_TOP, VU_W, VU_H, co2Lvl, "CO2");
+ }
+ 
+ void drawMeter(int x, int y, int w, int h, int level, const char* label) {
+   gfx->fillRect(x - 1, y - 1, w + 2, h + 2, COL_BLACK);
+   
+   uint16_t borderCol = COL_VU_GREEN;
+   if (level >= 8) borderCol = COL_RED;
+   else if (level >= 6) borderCol = COL_ORANGE;
+   else if (level >= 4) borderCol = COL_YELLOW;
+   
+   gfx->drawRoundRect(x, y, w, h, 4, borderCol);
+   
+   gfx->setTextColor(COL_YELLOW);
+   gfx->setTextSize(1);
+   for (size_t i = 0; i < strlen(label) && i < 3; i++) {
+     gfx->setCursor(x + w/2 - 3, DAYS_Y + 4 + i * 11);
+     char c[2] = {label[i], 0};
+     gfx->print(c);
+   }
+   
+   int pad = 4;
+   int segCount = 10;
+   int segGap = 3;
+   int segH = (h - pad * 2 - (segCount - 1) * segGap) / segCount;
+   
+   for (int i = 0; i < segCount; i++) {
+     int segY = y + h - pad - (i + 1) * (segH + segGap) + segGap;
+     
+     uint16_t segCol = COL_DARK_GRAY;
+     if (i < level) {
+       if (i < 4) segCol = COL_VU_GREEN;
+       else if (i < 6) segCol = COL_YELLOW;
+       else if (i < 8) segCol = COL_ORANGE;
+       else segCol = COL_RED;
+     }
+     
+     gfx->fillRect(x + pad, segY, w - pad * 2, segH, segCol);
+   }
+ }
+ 
+ void drawHeader() {
+   int hx = VU_X + VU_TOTAL_W + 20;
+   
+   gfx->fillRect(hx - 5, HEADER_Y - 15, 200, 30, COL_BLACK);
+   
+   drawWifiIcon(hx, HEADER_Y);
+   drawProfileIcon(hx + 45, HEADER_Y);
+   
+   gfx->setTextColor(COL_YELLOW);
+   gfx->setTextSize(1);
+   gfx->setCursor(hx + 80, HEADER_Y - 4);
+   gfx->print("Friyay//Protocol 1.0");
+ }
+ 
+ void drawWifiIcon(int x, int y) {
+   int barW = 4;
+   int barGap = 3;
+   int baseY = y + 10;
+   
+   for (int i = 0; i < 4; i++) {
+     int barH = 6 + i * 5;
+     int barX = x + i * (barW + barGap);
+     int barY = baseY - barH;
+     
+     uint16_t col = (i < wifiStrength) ? COL_GREEN : COL_DARK_GRAY;
+     gfx->fillRect(barX, barY, barW, barH, col);
+   }
+ }
+ 
+ void drawProfileIcon(int x, int y) {
+   uint16_t col = profileActive ? COL_GREEN : COL_GRAY;
+   
+   gfx->drawCircle(x, y, 10, col);
+   gfx->fillCircle(x, y - 3, 4, col);
+   gfx->fillRect(x - 5, y + 5, 10, 3, col);
+ }
+ 
+ void drawSpotifyArea() {
+   gfx->fillRoundRect(ART_X, SPOT_TOP, ALBUM_ART_W, SPOT_HEADER_H, 8, COL_GREEN);
+   gfx->fillRect(ART_X, SPOT_TOP + SPOT_HEADER_H - 8, ALBUM_ART_W, 8, COL_GREEN);
+   
+   gfx->setTextColor(COL_BLACK);
+   gfx->setTextSize(3);
+   gfx->setCursor(ART_X + 55, SPOT_TOP + 12);
+   gfx->print("LISTEN");
+   
+   gfx->setTextSize(1);
+   gfx->setCursor(ART_X + ALBUM_ART_W - 25, SPOT_TOP + 18);
+   gfx->print("</>");
+   
+   gfx->fillRect(ART_X, ART_AREA_Y, ALBUM_ART_W, ALBUM_ART_H, COL_SPOTIFY_BG);
+   gfx->drawRect(ART_X, ART_AREA_Y, ALBUM_ART_W, ALBUM_ART_H, COL_YELLOW);
+   
+   for (int gx = ART_X; gx <= ART_X + ALBUM_ART_W; gx += 25) {
+     gfx->drawFastVLine(gx, ART_AREA_Y, ALBUM_ART_H, 0x2115);
+   }
+   for (int gy = ART_AREA_Y; gy <= ART_AREA_Y + ALBUM_ART_H; gy += 25) {
+     gfx->drawFastHLine(ART_X, gy, ALBUM_ART_W, 0x2115);
+   }
+   
+   gfx->setTextColor(COL_CYAN);
+   gfx->setTextSize(2);
+   gfx->setCursor(ART_X + 70, ART_AREA_Y + ALBUM_ART_H / 2 - 20);
+   gfx->print("UPLOAD");
+   gfx->setCursor(ART_X + 85, ART_AREA_Y + ALBUM_ART_H / 2 + 5);
+   gfx->print("ART");
+ }
+ 
+ // ============================================================
+ // WIFI SETUP
+ // ============================================================
+ 
+ void startWiFiSetup() {
+   inSetup = true;
+   
+   gfx->fillScreen(COL_BLACK);
+   gfx->setTextColor(COL_YELLOW);
+   gfx->setTextSize(3);
+   gfx->setCursor(200, 220);
+   gfx->print("Scanning WiFi...");
+   
+   WiFi.mode(WIFI_STA);
+   WiFi.disconnect();
+   delay(100);
+   
+   netCount = WiFi.scanNetworks();
+   if (netCount > 15) netCount = 15;
+   
+   for (int i = 0; i < netCount; i++) {
+     networks[i] = WiFi.SSID(i);
+     Serial.printf("  %d: %s\n", i + 1, networks[i].c_str());
+   }
+   
+   WiFi.mode(WIFI_AP);
+   WiFi.softAP("FRIYAY-Setup");
+   
+   dns.start(53, "*", WiFi.softAPIP());
+   server.on("/", handleRoot);
+   server.onNotFound(handleRoot);
+   server.begin();
+   
+   drawNetList();
+ }
+ 
+ void drawNetList() {
+   gfx->fillScreen(COL_BLACK);
+   
+   gfx->setTextColor(COL_YELLOW);
+   gfx->setTextSize(3);
+   gfx->setCursor(280, 15);
+   gfx->print("WiFi Setup");
+   
+   gfx->setTextSize(2);
+   gfx->setTextColor(COL_CYAN);
+   gfx->setCursor(100, 55);
+   gfx->print("Tap network, enter password, connect");
+   
+   for (int i = 0; i < min(netCount, 7); i++) {
+     int y = 95 + (i * 45);
+     
+     if (i == selNetwork) {
+       gfx->fillRoundRect(30, y, 420, 40, 5, COL_YELLOW);
+       gfx->setTextColor(COL_BLACK);
+     } else {
+       gfx->drawRoundRect(30, y, 420, 40, 5, COL_GRAY);
+       gfx->setTextColor(COL_WHITE);
+     }
+     
+     gfx->setTextSize(2);
+     gfx->setCursor(45, y + 12);
+     gfx->print(networks[i]);
+   }
+   
+   gfx->drawRoundRect(30, 420, 420, 45, 5, COL_YELLOW);
+   gfx->setTextColor(kbInput.length() > 0 ? COL_WHITE : COL_GRAY);
+   gfx->setTextSize(2);
+   gfx->setCursor(45, 432);
+   if (kbInput.length() > 0) {
+     String stars = "";
+     for (unsigned int i = 0; i < kbInput.length(); i++) stars += "*";
+     gfx->print(stars);
+   } else {
+     gfx->print("Password...");
+   }
+   
+   gfx->fillRoundRect(470, 420, 80, 45, 5, COL_CYAN);
+   gfx->setTextColor(COL_BLACK);
+   gfx->setCursor(490, 432);
+   gfx->print("ABC");
+   
+   bool canConnect = (selNetwork >= 0 && kbInput.length() > 0);
+   if (canConnect) {
+     gfx->fillRoundRect(570, 420, 120, 45, 5, COL_VU_GREEN);
+     gfx->setTextColor(COL_BLACK);
+   } else {
+     gfx->drawRoundRect(570, 420, 120, 45, 5, COL_GRAY);
+     gfx->setTextColor(COL_GRAY);
+   }
+   gfx->setCursor(590, 432);
+   gfx->print("Connect");
+   
+   gfx->fillRoundRect(700, 420, 80, 45, 5, COL_ORANGE);
+   gfx->setTextColor(COL_BLACK);
+   gfx->setCursor(715, 432);
+   gfx->print("Scan");
+ }
+ 
+void drawKeyboard() {
+  kbVisible = true;
+
+  gfx->fillRect(0, 140, 800, 340, COL_DARK_GRAY);
+  gfx->drawRect(0, 140, 800, 340, COL_YELLOW);
+
+  gfx->fillRect(50, 150, 700, 40, COL_BLACK);
+  gfx->drawRect(50, 150, 700, 40, COL_CYAN);
+  gfx->setTextColor(COL_WHITE);
+  gfx->setTextSize(2);
+  gfx->setCursor(60, 160);
+  gfx->print(kbInput);
+  gfx->print("_");
+
+  // 5 rows: special chars, numbers, QWERTY, ASDF, ZXCV
+  const char* rows[] = {"!@#$%^&*()", "1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"};
+  int rowY[] = {200, 245, 290, 335, 380};
+  int rowX[] = {35, 35, 35, 70, 115};
+  int keyW = 68;
+  int keyH = 40;
+
+  // Period button (bottom right corner)
+  int periodX = 700;
+  int periodY = 430;
+  int periodW = 60;
+
+  for (int r = 0; r < 5; r++) {
+    int x = rowX[r];
+    for (int k = 0; rows[r][k]; k++) {
+      char c = rows[r][k];
+      // Only apply caps to letters
+      if (!capsOn && c >= 'A' && c <= 'Z') c += 32;
+
+      gfx->fillRoundRect(x, rowY[r], keyW - 4, keyH - 4, 4, COL_GRAY);
+      gfx->setTextColor(COL_WHITE);
+      gfx->setTextSize(2);
+      gfx->setCursor(x + 24, rowY[r] + 10);
+      char str[2] = {c, 0};
+      gfx->print(str);
+
+      x += keyW;
+    }
+  }
+
+  // CAPS button - prominent button next to SPACE
+  gfx->fillRoundRect(500, 380, 90, keyH - 4, 4, capsOn ? COL_YELLOW : COL_GRAY);
+  gfx->setTextColor(capsOn ? COL_BLACK : COL_WHITE);
+  gfx->setTextSize(2);
+  gfx->setCursor(515, 390);
+  gfx->print("CAPS");
+
+  // SPACE button
+  gfx->fillRoundRect(35, 430, 450, keyH - 4, 4, COL_GRAY);
+  gfx->setTextColor(COL_WHITE);
+  gfx->setTextSize(2);
+  gfx->setCursor(200, 440);
+  gfx->print("SPACE");
+
+  // DEL button
+  gfx->fillRoundRect(500, 430, 90, keyH - 4, 4, COL_ORANGE);
+  gfx->setTextColor(COL_BLACK);
+  gfx->setCursor(525, 440);
+  gfx->print("DEL");
+
+  // DONE button
+  gfx->fillRoundRect(605, 430, 90, keyH - 4, 4, COL_VU_GREEN);
+  gfx->setTextColor(COL_BLACK);
+  gfx->setCursor(620, 440);
+  gfx->print("DONE");
+
+  // Period button
+  gfx->fillRoundRect(periodX, periodY, periodW, keyH - 4, 4, COL_GRAY);
+  gfx->setTextColor(COL_WHITE);
+  gfx->setTextSize(3);
+  gfx->setCursor(periodX + 22, periodY + 8);
+  gfx->print(".");
+}
+
+void handleKBTouch() {
+  // DONE button
+  if (touchX >= 605 && touchX <= 695 && touchY >= 430 && touchY <= 466) {
+    kbVisible = false;
+    drawNetList();
+    return;
+  }
+
+  // DEL button
+  if (touchX >= 500 && touchX <= 590 && touchY >= 430 && touchY <= 466) {
+    if (kbInput.length() > 0) {
+      kbInput.remove(kbInput.length() - 1);
+      drawKeyboard();
+    }
+    return;
+  }
+
+  // CAPS button (below ZXCV row, left side)
+  if (touchX >= 500 && touchX <= 590 && touchY >= 380 && touchY <= 416) {
+    capsOn = !capsOn;
+    drawKeyboard();
+    return;
+  }
+
+  // SPACE button
+  if (touchX >= 35 && touchX <= 485 && touchY >= 430 && touchY <= 466) {
+    kbInput += " ";
+    drawKeyboard();
+    return;
+  }
+
+  // Period button
+  if (touchX >= 700 && touchX <= 760 && touchY >= 430 && touchY <= 466) {
+    kbInput += ".";
+    drawKeyboard();
+    return;
+  }
+
+  // Character keys (5 rows now: special, numbers, QWERTY, ASDF, ZXCV)
+  const char* rows[] = {"!@#$%^&*()", "1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"};
+  int rowY[] = {200, 245, 290, 335, 380};
+  int rowX[] = {35, 35, 35, 70, 115};
+  int keyW = 68;
+
+  for (int r = 0; r < 5; r++) {
+    if (touchY >= rowY[r] && touchY < rowY[r] + 40) {
+      int kx = touchX - rowX[r];
+      if (kx >= 0) {
+        int k = kx / keyW;
+        int len = strlen(rows[r]);
+        if (k < len) {
+          char c = rows[r][k];
+          // Only apply caps to letters
+          if (!capsOn && c >= 'A' && c <= 'Z') c += 32;
+          kbInput += c;
+          drawKeyboard();
+          return;
+        }
+      }
+    }
+  }
+}
+ 
+ void handleSetupTouch() {
+   if (kbVisible) {
+     handleKBTouch();
+     return;
+   }
+   
+   if (touchX >= 30 && touchX <= 450 && touchY >= 95 && touchY < 95 + (7 * 45)) {
+     int idx = (touchY - 95) / 45;
+     if (idx < netCount) {
+       selNetwork = idx;
+       drawNetList();
+     }
+   }
+   
+   if (touchY >= 420 && touchY <= 465) {
+     if ((touchX >= 30 && touchX <= 450) || (touchX >= 470 && touchX <= 550)) {
+       drawKeyboard();
+     }
+     else if (touchX >= 570 && touchX <= 690) {
+       if (selNetwork >= 0 && kbInput.length() > 0) {
+         doConnect();
+       }
+     }
+     else if (touchX >= 700 && touchX <= 780) {
+       startWiFiSetup();
+     }
+   }
+ }
+ 
+ 
+ void doConnect() {
+   gfx->fillScreen(COL_BLACK);
+   gfx->setTextColor(COL_YELLOW);
+   gfx->setTextSize(3);
+   gfx->setCursor(200, 220);
+   gfx->print("Connecting...");
+   
+   server.stop();
+   dns.stop();
+   WiFi.softAPdisconnect(true);
+   
+   WiFi.mode(WIFI_STA);
+   WiFi.begin(networks[selNetwork].c_str(), kbInput.c_str());
+   
+   int tries = 0;
+   while (WiFi.status() != WL_CONNECTED && tries < 25) {
+     delay(400);
+     gfx->print(".");
+     tries++;
+   }
+   
+   if (WiFi.status() == WL_CONNECTED) {
+     prefs.putString("ssid", networks[selNetwork]);
+     prefs.putString("pass", kbInput);
+     
+     gfx->fillScreen(COL_BLACK);
+     gfx->setTextColor(COL_VU_GREEN);
+     gfx->setCursor(250, 200);
+     gfx->print("Connected!");
+     gfx->setTextSize(2);
+     gfx->setCursor(250, 260);
+     gfx->print("IP: ");
+     gfx->print(WiFi.localIP());
+     delay(2000);
+     
+     wifiOK = true;
+     inSetup = false;
+     kbInput = "";
+     selNetwork = -1;
+     
+     configTime(-5 * 3600, 3600, "pool.ntp.org");
+     int t = 0;
+     while (!getLocalTime(&tinfo) && t < 15) {
+       delay(500);
+       t++;
+     }
+     
+     client.setInsecure();
+     getWeather();
+     
+     int rssi = WiFi.RSSI();
+     wifiStrength = rssi >= -50 ? 4 : rssi >= -60 ? 3 : rssi >= -70 ? 2 : 1;
+     
+     drawUI();
+   } else {
+     gfx->fillScreen(COL_BLACK);
+     gfx->setTextColor(COL_RED);
+     gfx->setCursor(200, 220);
+     gfx->print("Failed!");
+     delay(2000);
+     kbInput = "";
+     startWiFiSetup();
+   }
+ }
+ 
+ void tryConnect() {
+   gfx->fillScreen(COL_BLACK);
+   gfx->setTextColor(COL_YELLOW);
+   gfx->setTextSize(2);
+   gfx->setCursor(200, 220);
+   gfx->print("Connecting to ");
+   gfx->print(savedSSID);
+   
+   WiFi.mode(WIFI_STA);
+   WiFi.setSleep(false);
+   WiFi.begin(savedSSID.c_str(), savedPass.c_str());
+   
+   int tries = 0;
+   while (WiFi.status() != WL_CONNECTED && tries < 20) {
+     delay(500);
+     gfx->print(".");
+     tries++;
+   }
+   
+   if (WiFi.status() == WL_CONNECTED) {
+     wifiOK = true;
+     Serial.printf("   Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+   }
+ }
+ 
+ void handleRoot() {
+   server.send(200, "text/html", 
+     "<html><body style='text-align:center;font-family:sans-serif;padding:40px'>"
+     "<h1 style='color:#FFD700'>FRIYAY FOREVER</h1>"
+     "<p>Use the touch screen to connect to WiFi</p></body></html>");
+ }
+ 
+ // ============================================================
+ // TELEGRAM
+ // ============================================================
+ 
+ void checkTelegram() {
+   int n = bot.getUpdates(bot.last_message_received + 1);
+   
+   for (int i = 0; i < n; i++) {
+     String chatId = String(bot.messages[i].chat_id);
+     String text = bot.messages[i].text;
+     String from = bot.messages[i].from_name;
+     int64_t senderId = bot.messages[i].chat_id.toInt();
+     
+     Serial.printf("Msg from %s: %s\n", from.c_str(), text.c_str());
+     
+     int fIdx = getFriendIdx(senderId);
+     
+     if (fIdx >= 0) {
+       String t = text;
+       t.toLowerCase();
+       
+       if (t.indexOf("/commit") >= 0 || t == "in" || t == "commit" || t == "riding") {
+         friends[fIdx].committed = true;
+         broadcast("ðŸ‚ " + String(friends[fIdx].initials) + " is IN!");
+         drawButtons();
+         
+         scannerActive = true;
+         scannerPos = 4;
+         scannerDirection = 1;
+         scannerBounces = 0;
+         continue;
+       }
+       
+       if (t.indexOf("/uncommit") >= 0 || t == "out" || t == "bail") {
+         friends[fIdx].committed = false;
+         broadcast("ðŸ˜¢ " + String(friends[fIdx].initials) + " is OUT");
+         drawButtons();
+         continue;
+       }
+     }
+     
+     if (text.indexOf("spotify.com") >= 0 || text.indexOf("open.spotify") >= 0) {
+       parseSpotify(text);
+       showMessage(from + " shared music!");
+       drawSpotifyArea();
+       continue;
+     }
+     
+     if (text == "/start" || text == "/help") {
+       String w = "ðŸ‚ FRIYAY FOREVER\n\n/commit - You're in!\n/uncommit - Can't make it\n/status - Who's riding\n/weather - Conditions\n\nOr just say 'in' or 'out'";
+       bot.sendMessage(chatId, w, "");
+       continue;
+     }
+     
+     if (text == "/status") {
+       String s = "ðŸ“Š Status:\n\n";
+       for (int j = 0; j < NUM_FRIENDS; j++) {
+         s += friends[j].committed ? "âœ… " : "â¬œ ";
+         s += friends[j].initials;
+         s += "\n";
+       }
+       s += "\nâ±ï¸ " + String(hrsLeft) + "h " + String(minLeft) + "m to Friday";
+       bot.sendMessage(chatId, s, "");
+       continue;
+     }
+     
+     if (text == "/weather") {
+       String w = "ðŸŒ¤ï¸ Chapel Hill\n\n";
+       w += "ðŸŒ¡ï¸ " + String((int)currTemp) + "Â°F\n";
+       w += "ðŸ’§ " + String(precipitation, 1) + "mm\n";
+       w += "ðŸ‚ Score: " + String(fukLvl * 10) + "/100";
+       bot.sendMessage(chatId, w, "");
+       continue;
+     }
+     
+     if (fIdx >= 0) {
+       showMessage(String(friends[fIdx].initials) + ": " + text);
+     }
+   }
+ }
+ 
+ void showMessage(String msg) {
+   currMsg = msg;
+   showingMsg = true;
+   newMsg = true;
+   msgTime = millis();
+   msgScrollPos = 0;
+   
+   scannerActive = true;
+   scannerPos = 4;
+   scannerDirection = 1;
+   scannerBounces = 0;
+   
+   drawTimer();
+ }
+ 
+ int getFriendIdx(int64_t id) {
+   for (int i = 0; i < NUM_FRIENDS; i++) {
+     if (friends[i].telegramId == id) return i;
+   }
+   return -1;
+ }
+ 
+ void broadcast(String msg) {
+   for (int i = 0; i < NUM_FRIENDS; i++) {
+     if (friends[i].telegramId != 0) {
+       bot.sendMessage(String(friends[i].telegramId), msg, "");
+     }
+   }
+ }
+ 
+ void parseSpotify(String text) {
+   int idx = text.indexOf("/track/");
+   if (idx >= 0) {
+     int start = idx + 7;
+     int end = text.indexOf("?", start);
+     if (end < 0) end = min((int)text.length(), start + 22);
+     trackId = text.substring(start, end);
+     hasSpotify = true;
+     Serial.println("Track: " + trackId);
+   }
+ }
+ 
+ // ============================================================
+ // WEATHER & SENSORS
+ // ============================================================
+ 
+ void getWeather() {
+   if (WiFi.status() != WL_CONNECTED) return;
+   
+   HTTPClient http;
+   char url[300];
+   snprintf(url, sizeof(url),
+     "https://api.open-meteo.com/v1/forecast?"
+     "latitude=%.4f&longitude=%.4f"
+     "&current=temperature_2m,precipitation"
+     "&temperature_unit=fahrenheit&timezone=America/New_York",
+     LATITUDE, LONGITUDE);
+   
+   http.begin(url);
+   http.setTimeout(10000);
+   
+   if (http.GET() == 200) {
+     String resp = http.getString();
+     StaticJsonDocument<1024> doc;
+     
+     if (!deserializeJson(doc, resp)) {
+       currTemp = doc["current"]["temperature_2m"];
+       precipitation = doc["current"]["precipitation"];
+       weatherOK = true;
+       calcWeather();
+       Serial.printf("Weather: %.0fÂ°F, %.1fmm\n", currTemp, precipitation);
+     }
+   }
+   http.end();
+ }
+ 
+ void calcWeather() {
+   wetLvl = constrain((int)(precipitation * 4), 0, 10);
+   float diff = abs(currTemp - 65);
+   tmpLvl = constrain(10 - (int)(diff / 5), 0, 10);
+   fukLvl = constrain(tmpLvl - wetLvl * 2 + 5, 0, 10);
+ }
+ 
+ void readSensors() {
+   int total = 0;
+   for (int i = 0; i < 10; i++) {
+     total += analogRead(MQ135_PIN);
+     delay(5);
+   }
+   int raw = total / 10;
+   
+   if (raw < 1000) aqiLvl = constrain(10 - raw / 100, 5, 10);
+   else if (raw < 2000) aqiLvl = constrain(7 - (raw - 1000) / 250, 2, 6);
+   else aqiLvl = constrain(3 - (raw - 2000) / 500, 0, 2);
+   
+   co2Lvl = aqiLvl;
+ }
+ 
+ // ============================================================
+ // TIME
+ // ============================================================
+ 
+ void calcCountdown() {
+   time_t now = time(nullptr);
+   struct tm fri = tinfo;
+   
+   int days = (5 - dayOfWeek + 7) % 7;
+   if (days == 0 && tinfo.tm_hour >= 15) days = 7;
+   
+   fri.tm_mday += days;
+   fri.tm_hour = 15;
+   fri.tm_min = 0;
+   fri.tm_sec = 0;
+   
+   secToFri = difftime(mktime(&fri), now);
+   if (secToFri < 0) secToFri = 0;
+   
+   hrsLeft = secToFri / 3600;
+   minLeft = (secToFri % 3600) / 60;
+   secLeft = secToFri % 60;
+ }
+ 
+ void checkReset() {
+   if (dayOfWeek == 5 && tinfo.tm_hour == 16 && tinfo.tm_min == 0 && tinfo.tm_sec < 2) {
+     for (int i = 0; i < NUM_FRIENDS; i++) {
+       friends[i].committed = false;
+     }
+     broadcast("ðŸ”„ Reset! See you next Friday ðŸ‚");
+     drawButtons();
+   }
+ }
