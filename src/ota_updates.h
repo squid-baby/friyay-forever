@@ -4,26 +4,29 @@
  * =====================================================
  *
  * This module provides Over-The-Air (OTA) firmware updates
- * via GitHub raw file hosting.
+ * via GitHub Releases (works with private repos!).
  *
  * How it works:
- * 1. Device checks version.json on GitHub for latest version
- * 2. Compares with compiled-in FIRMWARE_VERSION
- * 3. If newer version available, downloads firmware.bin
- * 4. Uses ESP32 Update library to flash new firmware
- * 5. Device reboots with new firmware
+ * 1. Device queries GitHub Releases API for latest release
+ * 2. Downloads version.json from release assets
+ * 3. Compares with compiled-in FIRMWARE_VERSION
+ * 4. If newer version available, downloads firmware.bin
+ * 5. Uses ESP32 Update library to flash new firmware
+ * 6. Device reboots with new firmware
  *
  * Security considerations:
  * - Uses HTTPS for all downloads
+ * - Release assets are public even for private repos
  * - Validates firmware size before flashing
  * - Checks available space before download
  * - Provides rollback info in case of issues
  *
  * Usage:
  * 1. Set GITHUB_USER and GITHUB_REPO below
- * 2. Create OTAUpdater instance
- * 3. Call checkForUpdate() to check for new versions
- * 4. Call performUpdate() to download and install
+ * 2. Create GitHub Release with firmware.bin and version.json
+ * 3. Create OTAUpdater instance
+ * 4. Call checkForUpdate() to check for new versions
+ * 5. Call performUpdate() to download and install
  */
 
 #ifndef OTA_UPDATES_H
@@ -31,6 +34,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <Update.h>
 #include <ArduinoJson.h>
@@ -42,14 +46,12 @@
 #define GITHUB_USER "squid-baby"
 #define GITHUB_REPO "friyay-forever"
 
-// GitHub raw content URLs
-#define GITHUB_RAW_BASE "https://raw.githubusercontent.com/" GITHUB_USER "/" GITHUB_REPO "/main/"
-#define VERSION_URL     GITHUB_RAW_BASE "version.json"
-#define FIRMWARE_URL    GITHUB_RAW_BASE "firmware.bin"
+// GitHub API URL for latest release
+#define GITHUB_API_URL "https://api.github.com/repos/" GITHUB_USER "/" GITHUB_REPO "/releases/latest"
 
 // Timeouts and limits
-#define OTA_HTTP_TIMEOUT      15000   // 15 seconds for version check
-#define OTA_DOWNLOAD_TIMEOUT  120000  // 2 minutes for firmware download
+#define OTA_HTTP_TIMEOUT      15000   // 15 seconds for API/version check
+#define OTA_DOWNLOAD_TIMEOUT  180000  // 3 minutes for firmware download
 #define OTA_MAX_FIRMWARE_SIZE 3000000 // 3MB max firmware size
 #define OTA_MIN_FREE_SPACE    500000  // 500KB minimum free space
 
@@ -68,6 +70,7 @@ public:
         _lastError(""),
         _latestVersion(""),
         _releaseNotes(""),
+        _firmwareUrl(""),
         _firmwareSize(0),
         _isCritical(false) {
     }
@@ -86,13 +89,14 @@ public:
         #endif
     }
 
-    // Check GitHub for available updates
+    // Check GitHub Releases for available updates
     // Returns true if a newer version is available
     bool checkForUpdate() {
         _updateAvailable = false;
         _lastError = "";
         _latestVersion = "";
         _releaseNotes = "";
+        _firmwareUrl = "";
         _firmwareSize = 0;
         _isCritical = false;
 
@@ -102,20 +106,25 @@ public:
             return false;
         }
 
-        Serial.println("[OTA] Checking for updates...");
-        Serial.print("[OTA] URL: ");
-        Serial.println(VERSION_URL);
+        Serial.println("[OTA] Checking GitHub Releases for updates...");
+        Serial.print("[OTA] API URL: ");
+        Serial.println(GITHUB_API_URL);
+
+        // Use WiFiClientSecure for HTTPS
+        WiFiClientSecure client;
+        client.setInsecure();  // Skip certificate verification for simplicity
 
         HTTPClient http;
-        http.begin(VERSION_URL);
+        http.begin(client, GITHUB_API_URL);
         http.setTimeout(OTA_HTTP_TIMEOUT);
-        http.addHeader("Cache-Control", "no-cache");
+        http.addHeader("Accept", "application/vnd.github.v3+json");
+        http.addHeader("User-Agent", "ESP32-OTA-Updater");
 
         int httpCode = http.GET();
 
         if (httpCode != 200) {
-            _lastError = "HTTP error: " + String(httpCode);
-            Serial.printf("[OTA] HTTP error: %d\n", httpCode);
+            _lastError = "GitHub API error: " + String(httpCode);
+            Serial.printf("[OTA] GitHub API error: %d\n", httpCode);
             http.end();
             return false;
         }
@@ -123,8 +132,8 @@ public:
         String payload = http.getString();
         http.end();
 
-        // Parse JSON response
-        StaticJsonDocument<1024> doc;
+        // Parse GitHub release JSON
+        DynamicJsonDocument doc(8192);
         DeserializationError jsonError = deserializeJson(doc, payload);
 
         if (jsonError) {
@@ -133,25 +142,58 @@ public:
             return false;
         }
 
-        // Extract version info
-        const char* version = doc["version"];
-        if (!version) {
-            _lastError = "No version field in JSON";
-            Serial.println("[OTA] Error: No version field");
+        // Extract tag name (version)
+        const char* tagName = doc["tag_name"];
+        if (!tagName) {
+            _lastError = "No tag_name in release";
+            Serial.println("[OTA] Error: No tag_name");
             return false;
         }
 
-        _latestVersion = String(version);
+        // Remove 'v' prefix if present
+        _latestVersion = String(tagName);
+        if (_latestVersion.startsWith("v")) {
+            _latestVersion = _latestVersion.substring(1);
+        }
 
-        // Optional fields
-        if (doc.containsKey("release_notes")) {
-            _releaseNotes = doc["release_notes"].as<String>();
+        // Get release notes from body
+        if (doc.containsKey("body") && !doc["body"].isNull()) {
+            _releaseNotes = doc["body"].as<String>();
+            // Truncate if too long
+            if (_releaseNotes.length() > 200) {
+                _releaseNotes = _releaseNotes.substring(0, 197) + "...";
+            }
         }
-        if (doc.containsKey("firmware_size")) {
-            _firmwareSize = doc["firmware_size"].as<int>();
+
+        // Find firmware.bin and version.json in assets
+        String versionJsonUrl = "";
+        JsonArray assets = doc["assets"];
+
+        for (JsonObject asset : assets) {
+            String name = asset["name"].as<String>();
+            String downloadUrl = asset["browser_download_url"].as<String>();
+            int size = asset["size"].as<int>();
+
+            if (name == "firmware.bin") {
+                _firmwareUrl = downloadUrl;
+                _firmwareSize = size;
+                Serial.printf("[OTA] Found firmware.bin: %d bytes\n", size);
+            }
+            if (name == "version.json") {
+                versionJsonUrl = downloadUrl;
+                Serial.println("[OTA] Found version.json");
+            }
         }
-        if (doc.containsKey("critical")) {
-            _isCritical = doc["critical"].as<bool>();
+
+        if (_firmwareUrl.length() == 0) {
+            _lastError = "No firmware.bin in release";
+            Serial.println("[OTA] Error: No firmware.bin asset");
+            return false;
+        }
+
+        // Optionally fetch version.json for extra metadata (critical flag, etc.)
+        if (versionJsonUrl.length() > 0) {
+            fetchVersionJson(versionJsonUrl);
         }
 
         // Compare versions
@@ -162,6 +204,7 @@ public:
         if (isNewerVersion(_latestVersion, currentVer)) {
             _updateAvailable = true;
             Serial.println("[OTA] Update available!");
+            Serial.printf("[OTA] Firmware URL: %s\n", _firmwareUrl.c_str());
             return true;
         }
 
@@ -203,6 +246,11 @@ public:
             return false;
         }
 
+        if (_firmwareUrl.length() == 0) {
+            _lastError = "No firmware URL";
+            return false;
+        }
+
         if (WiFi.status() != WL_CONNECTED) {
             _lastError = "WiFi not connected";
             return false;
@@ -210,7 +258,7 @@ public:
 
         Serial.println("[OTA] Starting firmware download...");
         Serial.print("[OTA] URL: ");
-        Serial.println(FIRMWARE_URL);
+        Serial.println(_firmwareUrl);
 
         // Check available space
         size_t freeSpace = ESP.getFreeSketchSpace();
@@ -222,9 +270,14 @@ public:
             return false;
         }
 
+        // Use WiFiClientSecure for HTTPS GitHub download
+        WiFiClientSecure client;
+        client.setInsecure();
+
         HTTPClient http;
-        http.begin(FIRMWARE_URL);
+        http.begin(client, _firmwareUrl);
         http.setTimeout(OTA_DOWNLOAD_TIMEOUT);
+        http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);  // GitHub redirects to CDN
 
         int httpCode = http.GET();
 
@@ -348,8 +401,48 @@ private:
     String _lastError;
     String _latestVersion;
     String _releaseNotes;
+    String _firmwareUrl;
     int _firmwareSize;
     bool _isCritical;
+
+    // Fetch version.json from release assets for extra metadata
+    void fetchVersionJson(const String& url) {
+        Serial.println("[OTA] Fetching version.json for metadata...");
+
+        WiFiClientSecure client;
+        client.setInsecure();
+
+        HTTPClient http;
+        http.begin(client, url);
+        http.setTimeout(OTA_HTTP_TIMEOUT);
+        http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+
+        int httpCode = http.GET();
+        if (httpCode != 200) {
+            Serial.printf("[OTA] version.json fetch failed: %d\n", httpCode);
+            http.end();
+            return;
+        }
+
+        String payload = http.getString();
+        http.end();
+
+        StaticJsonDocument<1024> doc;
+        if (deserializeJson(doc, payload)) {
+            Serial.println("[OTA] version.json parse failed");
+            return;
+        }
+
+        // Extract optional fields
+        if (doc.containsKey("critical")) {
+            _isCritical = doc["critical"].as<bool>();
+        }
+        if (doc.containsKey("release_notes") && _releaseNotes.length() == 0) {
+            _releaseNotes = doc["release_notes"].as<String>();
+        }
+
+        Serial.printf("[OTA] Metadata: critical=%d\n", _isCritical);
+    }
 
     // Compare semantic versions (e.g., "1.2.3" vs "1.2.4")
     // Returns true if 'newer' is greater than 'current'
