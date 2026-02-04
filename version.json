@@ -1,13 +1,13 @@
 {
-  "version": "1.0.0",
+  "version": "1.0.1",
   "min_version": "1.0.0",
   "release_date": "2025-02-03",
-  "release_notes": "Initial OTA-enabled release",
+  "release_notes": "Fixed commit button spam bug",
   "critical": false,
-  "firmware_size": 1147664,
+  "firmware_size": 1147840,
   "changelog": [
-    "Added OTA update capability",
-    "Telegram commands: /version, /update, /install",
-    "Daily automatic update checks"
+    "Added 3-second debounce on commit button to prevent spam",
+    "Added touch debug logging",
+    "Fixed rapid toggle issue on ST unit"
   ]
 }

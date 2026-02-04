@@ -39,7 +39,7 @@
 // CONFIGURATION - CHANGE THESE FOR EACH UNIT
 // ============================================================
 
-#define MY_FRIEND_INDEX 1  // 0=NM, 1=ST, 2=GO, 3=TD, 4=MN
+#define MY_FRIEND_INDEX 0  // 0=NM, 1=ST, 2=GO, 3=TD, 4=MN
 
 #define BOT_TOKEN "8274851974:AAEao868jidxcQEnY8IxPK91ujLmOsA_Alg"
 
@@ -273,6 +273,10 @@ int msgScrollPos = 0;
 bool showCommitAnim = false;
 unsigned long commitAnimStart = 0;
 bool scannerActive = false;
+
+// Debounce
+unsigned long lastCommitTime = 0;
+#define COMMIT_DEBOUNCE_MS 3000  // 3 second cooldown between commits
 int scannerPos = 4;
 int scannerDirection = 1;
 int scannerBounces = 0;
@@ -433,6 +437,7 @@ bool checkTouch() {
         touchY = savedTouchY;
         touchState = TOUCH_IDLE;
         wasTouched = false;
+        Serial.printf("[TOUCH] Tap at (%d, %d)\n", touchX, touchY);
         return true;
       }
       break;
@@ -822,6 +827,14 @@ void handleTouch() {
 }
 
 void toggleCommit() {
+  // Debounce: prevent rapid-fire commits (3 second cooldown)
+  unsigned long now = millis();
+  if (now - lastCommitTime < COMMIT_DEBOUNCE_MS) {
+    Serial.printf("[TOUCH] Commit debounced (too soon, %lums since last)\n", now - lastCommitTime);
+    return;
+  }
+  lastCommitTime = now;
+
   friends[MY_FRIEND_INDEX].committed = !friends[MY_FRIEND_INDEX].committed;
   drawButtons();
 
