@@ -1,8 +1,16 @@
 /*
  * =====================================================
- * FRIYAY FOREVER - Protocol 1.0 (v26 - CLEANED UP)
+ * FRIYAY FOREVER - Protocol 1.0 (v27 - GHOST TOUCH FIX)
  * For ESP32-8048S043C (4.3" 800x480 RGB Display)
  * =====================================================
+ *
+ * v27 Changes from v26:
+ * - Fixed phantom/ghost touch triggering random commits
+ * - Added GT911 touch validation (point count, size, raw bounds)
+ * - Added two-tap commit confirmation (tap once = "Sure?", tap again = commit)
+ * - Increased commit debounce from 3s to 15s
+ * - Added detailed touch diagnostics logging (raw coords, size, ghost count)
+ * - Ghost touches are now logged with rejection reason for debugging
  *
  * v26 Changes from v25:
  * - Removed ~100 lines of dead code and unused variables
@@ -39,7 +47,7 @@
 // CONFIGURATION - CHANGE THESE FOR EACH UNIT
 // ============================================================
 
-#define MY_FRIEND_INDEX 0  // 0=NM, 1=ST, 2=GO, 3=TD, 4=MN
+#define MY_FRIEND_INDEX 1  // 0=NM, 1=ST, 2=GO, 3=TD, 4=MN
 
 #define BOT_TOKEN "8274851974:AAEao868jidxcQEnY8IxPK91ujLmOsA_Alg"
 
@@ -201,6 +209,14 @@ TAMC_GT911 ts = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, 800, 480)
 #define MAX_BOUNCES 16
 #define SCANNER_SPEED 8
 
+// Ghost touch filtering
+#define TOUCH_MIN_SIZE 3          // Minimum touch point size to accept (rejects noise spikes)
+#define TOUCH_RAW_X_MIN 20        // Reject raw X below this (edge noise)
+#define TOUCH_RAW_X_MAX 810       // Reject raw X above this (edge noise)
+#define TOUCH_RAW_Y_MIN 20        // Reject raw Y below this (edge noise)
+#define TOUCH_RAW_Y_MAX 500       // Reject raw Y above this (edge noise)
+#define COMMIT_CONFIRM_MS 3000    // Time window to confirm a commit with a second tap
+
 // LED breathing timing
 #define BREATH_NORMAL_CYCLE 480   // 8 seconds (4+4)
 #define BREATH_FAST_CYCLE 360     // 6 seconds (3+3)
@@ -276,7 +292,7 @@ bool scannerActive = false;
 
 // Debounce
 unsigned long lastCommitTime = 0;
-#define COMMIT_DEBOUNCE_MS 3000  // 3 second cooldown between commits
+#define COMMIT_DEBOUNCE_MS 15000  // 15 second cooldown between commits
 int scannerPos = 4;
 int scannerDirection = 1;
 int scannerBounces = 0;
@@ -307,6 +323,11 @@ bool touchOK = false;
 TouchState touchState = TOUCH_IDLE;
 bool wasTouched = false;
 int savedTouchX = 0, savedTouchY = 0;
+unsigned long ghostTouchCount = 0;  // Track rejected ghost touches for diagnostics
+
+// Commit confirmation (double-tap to commit)
+bool commitPending = false;
+unsigned long commitPendingTime = 0;
 
 // Timing trackers
 unsigned long lastWeather = 0;
@@ -339,6 +360,7 @@ void handleTouch();
 void handleSetupTouch();
 void handleKBTouch();
 void toggleCommit();
+void cancelCommitConfirm();
 void drawUI();
 void drawButtons();
 void drawNotificationBox();
@@ -420,11 +442,46 @@ bool checkTouch() {
       if (currentlyTouched && !wasTouched) {
         int rawX = ts.points[0].x;
         int rawY = ts.points[0].y;
+        uint8_t rawSize = ts.points[0].size;
+        uint8_t numTouches = ts.touches;
+
+        // Ghost touch filtering: validate touch data quality
+        bool valid = true;
+        const char* rejectReason = "";
+
+        // Check 1: Must have at least 1 reported touch point
+        if (numTouches < 1) {
+          valid = false;
+          rejectReason = "no touch points";
+        }
+        // Check 2: Touch point size must meet minimum (noise has size=0)
+        else if (rawSize < TOUCH_MIN_SIZE) {
+          valid = false;
+          rejectReason = "size too small (noise)";
+        }
+        // Check 3: Raw coordinates must be within sane bounds
+        else if (rawX < TOUCH_RAW_X_MIN || rawX > TOUCH_RAW_X_MAX ||
+                 rawY < TOUCH_RAW_Y_MIN || rawY > TOUCH_RAW_Y_MAX) {
+          valid = false;
+          rejectReason = "raw coords out of bounds";
+        }
+
+        if (!valid) {
+          ghostTouchCount++;
+          Serial.printf("[TOUCH] GHOST #%lu REJECTED (%s) raw=(%d,%d) size=%d touches=%d\n",
+                        ghostTouchCount, rejectReason, rawX, rawY, rawSize, numTouches);
+          wasTouched = true;  // Still set so we wait for release
+          touchState = TOUCH_HELD;  // Go to HELD to ignore this touch
+          break;
+        }
 
         savedTouchX = map(rawX, 792, 325, 0, 800);
         savedTouchY = map(rawY, 471, 209, 0, 480);
         savedTouchX = constrain(savedTouchX, 0, SCREEN_W - 1);
         savedTouchY = constrain(savedTouchY, 0, SCREEN_H - 1);
+
+        Serial.printf("[TOUCH] DOWN raw=(%d,%d) size=%d touches=%d -> mapped=(%d,%d)\n",
+                      rawX, rawY, rawSize, numTouches, savedTouchX, savedTouchY);
 
         touchState = TOUCH_PRESSED;
         wasTouched = true;
@@ -463,8 +520,8 @@ void setup() {
 
   Serial.println();
   Serial.println("========================================");
-  Serial.println("  FRIYAY FOREVER Protocol 1.0 - v26");
-  Serial.println("  CLEANED UP VERSION");
+  Serial.println("  FRIYAY FOREVER Protocol 1.0 - v27");
+  Serial.println("  GHOST TOUCH FIX");
   Serial.println("========================================");
   Serial.printf("Unit owner: %s\n\n", friends[MY_FRIEND_INDEX].initials);
 
@@ -599,6 +656,11 @@ void loop() {
   if (selectedDay >= 0 && lastDaySelectTime > 0 &&
       (now - lastDaySelectTime >= DAY_AUTO_RESET_MS)) {
     selectDay(-1);
+  }
+
+  // Auto-cancel commit confirmation if timed out
+  if (commitPending && (now - commitPendingTime >= COMMIT_CONFIRM_MS)) {
+    cancelCommitConfirm();
   }
 
   // Telegram check (15 seconds)
@@ -827,13 +889,29 @@ void handleTouch() {
 }
 
 void toggleCommit() {
-  // Debounce: prevent rapid-fire commits (3 second cooldown)
   unsigned long now = millis();
+
+  // Debounce: prevent rapid-fire commits (15 second cooldown)
   if (now - lastCommitTime < COMMIT_DEBOUNCE_MS) {
-    Serial.printf("[TOUCH] Commit debounced (too soon, %lums since last)\n", now - lastCommitTime);
+    Serial.printf("[COMMIT] Debounced (too soon, %lums since last)\n", now - lastCommitTime);
     return;
   }
+
+  // Two-tap confirmation: first tap sets pending, second tap confirms
+  if (!commitPending) {
+    // First tap: enter confirmation mode
+    commitPending = true;
+    commitPendingTime = now;
+    Serial.println("[COMMIT] Pending confirmation - tap again to confirm");
+    drawButtons();  // Redraws with "Confirm?" state
+    return;
+  }
+
+  // Second tap: confirm and execute the commit
+  commitPending = false;
+  commitPendingTime = 0;
   lastCommitTime = now;
+  Serial.println("[COMMIT] Confirmed! Toggling commit state");
 
   friends[MY_FRIEND_INDEX].committed = !friends[MY_FRIEND_INDEX].committed;
   drawButtons();
@@ -853,6 +931,15 @@ void toggleCommit() {
   drawTimer();
 }
 
+void cancelCommitConfirm() {
+  if (commitPending) {
+    commitPending = false;
+    commitPendingTime = 0;
+    Serial.println("[COMMIT] Confirmation timed out");
+    drawButtons();
+  }
+}
+
 // ============================================================
 // DRAWING FUNCTIONS
 // ============================================================
@@ -866,7 +953,7 @@ void showSplash() {
   gfx->setTextSize(2);
   gfx->setTextColor(COL_CYAN);
   gfx->setCursor(290, 250);
-  gfx->print("Protocol 1.0 v26");
+  gfx->print("Protocol 1.0 v27");
   gfx->setTextColor(COL_WHITE);
   gfx->setCursor(320, 300);
   gfx->print("Unit: ");
@@ -919,12 +1006,27 @@ void drawButtons() {
   }
 
   x += 10;
-  uint16_t commitBgColor = friends[MY_FRIEND_INDEX].committed ? COL_YELLOW : COL_CYAN;
+  uint16_t commitBgColor;
+  if (commitPending) {
+    commitBgColor = COL_ORANGE;  // Orange = "tap again to confirm"
+  } else if (friends[MY_FRIEND_INDEX].committed) {
+    commitBgColor = COL_YELLOW;
+  } else {
+    commitBgColor = COL_CYAN;
+  }
   gfx->fillRoundRect(x, BTN_Y, COMMIT_W, BTN_H, 6, commitBgColor);
   gfx->setTextColor(COL_BLACK);
   gfx->setTextSize(2);
-  gfx->setCursor(x + 8, BTN_Y + 17);
-  gfx->print("Commit");
+  if (commitPending) {
+    gfx->setCursor(x + 2, BTN_Y + 10);
+    gfx->print("Sure?");
+    gfx->setTextSize(1);
+    gfx->setCursor(x + 8, BTN_Y + 32);
+    gfx->print("tap again");
+  } else {
+    gfx->setCursor(x + 8, BTN_Y + 17);
+    gfx->print("Commit");
+  }
 }
 
 void drawNotificationBox() {
