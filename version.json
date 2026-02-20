@@ -1,13 +1,13 @@
 {
-  "version": "1.0.2",
+  "version": "1.0.1",
   "min_version": "1.0.0",
-  "release_date": "2026-02-19",
-  "release_notes": "Shrink album art to prevent CO2 slider overlap",
+  "release_date": "2025-02-03",
+  "release_notes": "Fixed commit button spam bug",
   "critical": false,
   "firmware_size": 1147840,
   "changelog": [
-    "Reduced album art render size to 202x202px (was 210px square)",
-    "Album art centered horizontally with 4px inset each side",
-    "Scan code and QR placeholder positions unchanged"
+    "Added 3-second debounce on commit button to prevent spam",
+    "Added touch debug logging",
+    "Fixed rapid toggle issue on ST unit"
   ]
 }
