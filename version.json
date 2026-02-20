@@ -1,13 +1,12 @@
 {
-  "version": "1.0.1",
+  "version": "1.0.3",
   "min_version": "1.0.0",
-  "release_date": "2025-02-03",
-  "release_notes": "Fixed commit button spam bug",
+  "release_date": "2026-02-19",
+  "release_notes": "Revert v1.0.2 album art changes",
   "critical": false,
   "firmware_size": 1147840,
   "changelog": [
-    "Added 3-second debounce on commit button to prevent spam",
-    "Added touch debug logging",
-    "Fixed rapid toggle issue on ST unit"
+    "Reverted album art sizing changes from v1.0.2",
+    "Restores original v1.0.1 behavior"
   ]
 }
