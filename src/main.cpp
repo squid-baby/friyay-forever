@@ -147,7 +147,8 @@ TAMC_GT911 ts = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, 800, 480)
 // Spotify/Album art area
 #define ALBUM_ART_W 225
 #define ALBUM_ART_H 280
-#define ALBUM_ART_DISPLAY_H 210  // v26: Named constant for actual display height
+#define ALBUM_ART_DISPLAY_W 217  // art render width (centered within ALBUM_ART_W panel)
+#define ALBUM_ART_DISPLAY_H 202  // art render height (square with ALBUM_ART_DISPLAY_W)
 #define SPOT_HEADER_H 45
 #define SPOT_TOTAL_H (SPOT_HEADER_H + ALBUM_ART_H)
 #define SPOT_BOTTOM BOTTOM_LINE
@@ -1361,7 +1362,8 @@ void displayQRPlaceholder() {
 
 int jpegDrawCallback(JPEGDRAW *pDraw) {
   if (pDraw->x >= ALBUM_ART_W || pDraw->y >= ALBUM_ART_DISPLAY_H) return 1;
-  gfx->draw16bitRGBBitmap(ART_X + pDraw->x, ART_AREA_Y + pDraw->y, pDraw->pPixels, pDraw->iWidth, pDraw->iHeight);
+  gfx->draw16bitRGBBitmap(ART_X + pDraw->x, ART_AREA_Y + pDraw->y, pDraw->pPixels,
+    min((int)pDraw->iWidth, ALBUM_ART_W - pDraw->x), min((int)pDraw->iHeight, ALBUM_ART_DISPLAY_H - pDraw->y));
   return 1;
 }
 
@@ -2010,7 +2012,7 @@ void downloadAndDisplayImage() {
 
 void decodeAndDisplayJpeg(uint8_t *buffer, int size) {
   // Clear album art area before drawing
-  gfx->fillRect(ART_X, ART_AREA_Y, ALBUM_ART_W, ALBUM_ART_DISPLAY_H, COL_SPOTIFY_BG);
+  gfx->fillRect(ART_X, ART_AREA_Y, ALBUM_ART_W, ALBUM_ART_DISPLAY_H, COL_SPOTIFY_BG);  // clear art area only
 
   if (jpeg.openRAM(buffer, size, jpegDrawCallback)) {
     // Get original dimensions
@@ -2022,8 +2024,8 @@ void decodeAndDisplayJpeg(uint8_t *buffer, int size) {
     int scaledWidth = imgWidth;
     int scaledHeight = imgHeight;
 
-    // Center the image - negative offset means overflow gets clipped
-    int offsetX = (ALBUM_ART_W - scaledWidth) / 2;
+    // Center the image within the rendered art bounds (4px inset each side, top-anchored)
+    int offsetX = (ALBUM_ART_DISPLAY_W - scaledWidth) / 2 + (ALBUM_ART_W - ALBUM_ART_DISPLAY_W) / 2;
     int offsetY = (ALBUM_ART_DISPLAY_H - scaledHeight) / 2;
 
     jpeg.setPixelType(RGB565_LITTLE_ENDIAN);
