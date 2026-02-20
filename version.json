@@ -1,12 +1,13 @@
 {
-  "version": "1.0.3",
+  "version": "1.0.4",
   "min_version": "1.0.0",
-  "release_date": "2026-02-19",
-  "release_notes": "Revert v1.0.2 album art changes",
+  "release_date": "2026-02-20",
+  "release_notes": "Album art fix + MAC-based unit identity",
   "critical": false,
-  "firmware_size": 1147840,
   "changelog": [
-    "Reverted album art sizing changes from v1.0.2",
-    "Restores original v1.0.1 behavior"
+    "Fixed album art overflow: PSRAM buffer decode + software scale to 260x260",
+    "Art renders flush right to screen edge, flush left to VU meters",
+    "MAC-based unit identity: single binary works for all units via OTA",
+    "No more compile-per-unit - identity resolved from hardware MAC at boot"
   ]
 }

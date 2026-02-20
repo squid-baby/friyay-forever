@@ -47,7 +47,24 @@
 // CONFIGURATION - CHANGE THESE FOR EACH UNIT
 // ============================================================
 
-#define MY_FRIEND_INDEX 1  // 0=NM, 1=ST, 2=GO, 3=TD, 4=MN
+// Unit identity - resolved at boot from MAC address
+// To find a unit's MAC, check serial output at boot
+int MY_FRIEND_INDEX = 0;  // default fallback = NM
+
+// MAC-to-owner lookup table (last 3 bytes of MAC address)
+// Add each unit's MAC here after reading from serial output
+struct MacMapping {
+  uint8_t mac3, mac4, mac5;  // last 3 octets
+  int friendIndex;
+};
+const MacMapping MAC_TABLE[] = {
+  {0x85, 0x6C, 0x38, 0},    // NM - MAC 10:51:DB:85:6C:38
+  // {0xXX, 0xXX, 0xXX, 1},  // ST - TODO: get MAC from Simon
+  // {0xXX, 0xXX, 0xXX, 2},  // GO - TODO: add MAC
+  // {0xXX, 0xXX, 0xXX, 3},  // TD - TODO: add MAC
+  // {0xXX, 0xXX, 0xXX, 4},  // MN - TODO: add MAC
+};
+const int MAC_TABLE_SIZE = sizeof(MAC_TABLE) / sizeof(MAC_TABLE[0]);
 
 #define BOT_TOKEN "8274851974:AAEao868jidxcQEnY8IxPK91ujLmOsA_Alg"
 
@@ -147,7 +164,7 @@ TAMC_GT911 ts = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, 800, 480)
 // Spotify/Album art area
 #define ALBUM_ART_W 225
 #define ALBUM_ART_H 280
-#define ALBUM_ART_DISPLAY_H 210  // v26: Named constant for actual display height
+#define ALBUM_ART_DISPLAY_H 260  // art area height: covers header, flush with scan code
 #define SPOT_HEADER_H 45
 #define SPOT_TOTAL_H (SPOT_HEADER_H + ALBUM_ART_H)
 #define SPOT_BOTTOM BOTTOM_LINE
@@ -315,6 +332,9 @@ String spotifyCodeUrl = "";
 String spotifySenderInitials = "";
 bool showingQRCode = false;
 JPEGDEC jpeg;
+uint16_t *jpegBuffer = nullptr;  // PSRAM buffer for JPEG decode-then-scale
+int jpegBufferW = 0;             // width of image being decoded into buffer
+int jpegBufferH = 0;             // height of image being decoded into buffer
 
 // Touch
 enum TouchState { TOUCH_IDLE, TOUCH_PRESSED, TOUCH_HELD };
@@ -400,6 +420,7 @@ void decodeAndDisplayCode(uint8_t *buffer, int size);
 void checkQRReminder();
 void displayQRPlaceholder();
 int jpegDrawCallback(JPEGDRAW *pDraw);
+int jpegDrawToBuffer(JPEGDRAW *pDraw);
 int jpegDrawCallbackCode(JPEGDRAW *pDraw);
 int jpegDrawCallbackQR(JPEGDRAW *pDraw);
 String sanitizeMessage(String msg);
@@ -523,6 +544,17 @@ void setup() {
   Serial.println("  FRIYAY FOREVER Protocol 1.0 - v27");
   Serial.println("  GHOST TOUCH FIX");
   Serial.println("========================================");
+
+  // Resolve unit identity from MAC address
+  uint8_t mac[6];
+  WiFi.macAddress(mac);
+  Serial.printf("MAC: %02X:%02X:%02X:%02X:%02X:%02X\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  for (int i = 0; i < MAC_TABLE_SIZE; i++) {
+    if (mac[3] == MAC_TABLE[i].mac3 && mac[4] == MAC_TABLE[i].mac4 && mac[5] == MAC_TABLE[i].mac5) {
+      MY_FRIEND_INDEX = MAC_TABLE[i].friendIndex;
+      break;
+    }
+  }
   Serial.printf("Unit owner: %s\n\n", friends[MY_FRIEND_INDEX].initials);
 
   // Initialize display
@@ -1365,6 +1397,20 @@ int jpegDrawCallback(JPEGDRAW *pDraw) {
   return 1;
 }
 
+int jpegDrawToBuffer(JPEGDRAW *pDraw) {
+  if (!jpegBuffer || jpegBufferW <= 0 || jpegBufferH <= 0) return 0;
+  for (int y = 0; y < pDraw->iHeight; y++) {
+    int dstY = pDraw->y + y;
+    if (dstY < 0 || dstY >= jpegBufferH) continue;
+    for (int x = 0; x < pDraw->iWidth; x++) {
+      int dstX = pDraw->x + x;
+      if (dstX < 0 || dstX >= jpegBufferW) continue;
+      jpegBuffer[dstY * jpegBufferW + dstX] = pDraw->pPixels[y * pDraw->iWidth + x];
+    }
+  }
+  return 1;
+}
+
 int jpegDrawCallbackQR(JPEGDRAW *pDraw) {
   if (pDraw->x >= 180) return 1;
   gfx->draw16bitRGBBitmap(ART_X + QR_OFFSET_X + pDraw->x, ART_AREA_Y + QR_OFFSET_Y + pDraw->y, pDraw->pPixels, pDraw->iWidth, pDraw->iHeight);
@@ -2009,31 +2055,67 @@ void downloadAndDisplayImage() {
 }
 
 void decodeAndDisplayJpeg(uint8_t *buffer, int size) {
-  // Clear album art area before drawing
-  gfx->fillRect(ART_X, ART_AREA_Y, ALBUM_ART_W, ALBUM_ART_DISPLAY_H, COL_SPOTIFY_BG);
+  // Art renders at 260x260, flush right to screen edge, flush left to VU meters
+  const int artRenderW = 260;
+  const int artRenderH = 260;
+  const int artRenderX = SCREEN_W - artRenderW;  // flush right, no margin
+  const int artRenderY = SPOT_TOP;                // covers LISTEN header
 
-  if (jpeg.openRAM(buffer, size, jpegDrawCallback)) {
-    // Get original dimensions
-    int imgWidth = jpeg.getWidth();
-    int imgHeight = jpeg.getHeight();
+  // Clear the render area
+  gfx->fillRect(artRenderX, artRenderY, artRenderW, artRenderH, COL_SPOTIFY_BG);
 
-    // Use 1:1 scale for 300px images - clip to fill container
-    int scale = 0;
-    int scaledWidth = imgWidth;
-    int scaledHeight = imgHeight;
+  if (jpeg.openRAM(buffer, size, jpegDrawToBuffer)) {
+    int srcW = jpeg.getWidth();
+    int srcH = jpeg.getHeight();
 
-    // Center the image - negative offset means overflow gets clipped
-    int offsetX = (ALBUM_ART_W - scaledWidth) / 2;
-    int offsetY = (ALBUM_ART_DISPLAY_H - scaledHeight) / 2;
+    // Allocate PSRAM buffer for full-size decode
+    jpegBuffer = (uint16_t*)ps_malloc(srcW * srcH * 2);
+    if (!jpegBuffer) {
+      Serial.println("[ART] PSRAM alloc failed");
+      jpeg.close();
+      return;
+    }
+    jpegBufferW = srcW;
+    jpegBufferH = srcH;
 
     jpeg.setPixelType(RGB565_LITTLE_ENDIAN);
-
-    if (jpeg.decode(offsetX, offsetY, scale)) {
-      drawSenderBadge();
-      // Fetch and display Spotify code after successful album art decode
-      if (trackId.length() > 0) getSpotifyCode();
+    if (!jpeg.decode(0, 0, 0)) {
+      Serial.println("[ART] JPEG decode failed");
+      free(jpegBuffer);
+      jpegBuffer = nullptr;
+      jpegBufferW = 0;
+      jpegBufferH = 0;
+      jpeg.close();
+      return;
     }
     jpeg.close();
+
+    // Scale to fill 260x260 - crop to fill (no letterboxing)
+    float scaleFactor = max((float)artRenderW / srcW, (float)artRenderH / srcH);
+    int scaledW = (int)(srcW * scaleFactor);
+    int scaledH = (int)(srcH * scaleFactor);
+
+    // Center crop offsets (in source pixel space)
+    int cropX = (scaledW - artRenderW) / 2;
+    int cropY = (scaledH - artRenderH) / 2;
+
+    // Nearest-neighbor scale and blit
+    for (int dy = 0; dy < artRenderH; dy++) {
+      int sy = (dy + cropY) * srcH / scaledH;
+      for (int dx = 0; dx < artRenderW; dx++) {
+        int sx = (dx + cropX) * srcW / scaledW;
+        uint16_t pixel = jpegBuffer[sy * srcW + sx];
+        gfx->drawPixel(artRenderX + dx, artRenderY + dy, pixel);
+      }
+    }
+
+    free(jpegBuffer);
+    jpegBuffer = nullptr;
+    jpegBufferW = 0;
+    jpegBufferH = 0;
+
+    drawSenderBadge();
+    if (trackId.length() > 0) getSpotifyCode();
   }
 }
 
