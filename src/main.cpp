@@ -60,9 +60,9 @@ struct MacMapping {
 const MacMapping MAC_TABLE[] = {
   {0x85, 0x6C, 0x38, 0},    // NM - MAC 10:51:DB:85:6C:38
   // {0xXX, 0xXX, 0xXX, 1},  // ST - TODO: get MAC from Simon
-  // {0xXX, 0xXX, 0xXX, 2},  // GO - TODO: add MAC
-  // {0xXX, 0xXX, 0xXX, 3},  // TD - TODO: add MAC
-  // {0xXX, 0xXX, 0xXX, 4},  // MN - TODO: add MAC
+  {0x6E, 0x4A, 0xC8, 2},    // GO - MAC 10:20:BA:6E:4A:C8
+  {0x6C, 0xB1, 0xE0, 3},    // TD - MAC 10:20:BA:6C:B1:E0
+  {0x6E, 0x49, 0xC0, 4},    // MN - MAC 10:20:BA:6E:49:C0
 };
 const int MAC_TABLE_SIZE = sizeof(MAC_TABLE) / sizeof(MAC_TABLE[0]);
 
