@@ -70,16 +70,17 @@ const int MAC_TABLE_SIZE = sizeof(MAC_TABLE) / sizeof(MAC_TABLE[0]);
 
 struct Friend {
   const char* initials;
+  const char* name;
   int64_t telegramId;
   bool committed;
 };
 
 Friend friends[] = {
-  {"NM", 7612996805LL, false},
-  {"ST", 7015581601LL, false},
-  {"GO", 8252040084LL, false},
-  {"TD", 8293810017LL, false},
-  {"MN", 8472668102LL, false}
+  {"NM", "Nate",   7612996805LL, false},
+  {"ST", "Simon",  7015581601LL, false},
+  {"GO", "Graeme", 8252040084LL, false},
+  {"TD", "Tony",   8293810017LL, false},
+  {"MN", "Matt",   8472668102LL, false}
 };
 #define NUM_FRIENDS 5
 
@@ -949,8 +950,8 @@ void toggleCommit() {
   drawButtons();
 
   String msg = friends[MY_FRIEND_INDEX].committed
-    ? "🏂 " + String(friends[MY_FRIEND_INDEX].initials) + " is IN!"
-    : "😢 " + String(friends[MY_FRIEND_INDEX].initials) + " is OUT";
+    ? "🏂 " + String(friends[MY_FRIEND_INDEX].name) + " is in, Fuk YEA! "
+    : "😢 " + String(friends[MY_FRIEND_INDEX].name) + " is OUT";
 
   broadcast(msg);
   triggerScanner();
@@ -1788,7 +1789,7 @@ void checkTelegram() {
 
       if (t.indexOf("/commit") >= 0 || t == "in" || t == "commit" || t == "riding") {
         friends[fIdx].committed = true;
-        broadcast("🏂 " + String(friends[fIdx].initials) + " is IN!");
+        broadcast("🏂 " + String(friends[fIdx].name) + " is in, Fuk YEA! ");
         drawButtons();
         triggerScanner();
         continue;
@@ -1796,7 +1797,7 @@ void checkTelegram() {
 
       if (t.indexOf("/uncommit") >= 0 || t == "out" || t == "bail") {
         friends[fIdx].committed = false;
-        broadcast("😢 " + String(friends[fIdx].initials) + " is OUT");
+        broadcast("😢 " + String(friends[fIdx].name) + " is OUT");
         drawButtons();
         triggerScanner();
         continue;
@@ -1891,8 +1892,8 @@ void checkTelegram() {
       }
 
       // Notify everyone that this unit is updating
-      String initials = String(friends[MY_FRIEND_INDEX].initials);
-      broadcast("⚙️ " + initials + "'s unit is updating to v" + otaUpdater.getLatestVersion() + "...");
+      String fname = String(friends[MY_FRIEND_INDEX].name);
+      broadcast("⚙️ " + fname + "'s unit is updating to v" + otaUpdater.getLatestVersion() + "...");
 
       bot.sendMessage(chatId, "🚀 Installing update...\n\nDevice will reboot when complete!", "");
 
