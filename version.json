@@ -1,13 +1,12 @@
 {
-  "version": "1.0.4",
+  "version": "1.0.5",
   "min_version": "1.0.0",
-  "release_date": "2026-02-20",
-  "release_notes": "Album art fix + MAC-based unit identity",
+  "release_date": "2026-03-09",
+  "release_notes": "DST fix + Simon MAC discovery",
   "critical": false,
   "changelog": [
-    "Fixed album art overflow: PSRAM buffer decode + software scale to 260x260",
-    "Art renders flush right to screen edge, flush left to VU meters",
-    "MAC-based unit identity: single binary works for all units via OTA",
-    "No more compile-per-unit - identity resolved from hardware MAC at boot"
+    "Fixed daylight saving time handling with POSIX timezone rules (EST5EDT,M3.2.0,M11.1.0)",
+    "Added MAC address to /version Telegram output for unit identification",
+    "Changed unregistered unit fallback to ST identity to avoid NM collision"
   ]
 }

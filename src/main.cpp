@@ -49,7 +49,7 @@
 
 // Unit identity - resolved at boot from MAC address
 // To find a unit's MAC, check serial output at boot
-int MY_FRIEND_INDEX = 0;  // default fallback = NM
+int MY_FRIEND_INDEX = 1;  // default fallback = ST (only unregistered unit)
 
 // MAC-to-owner lookup table (last 3 bytes of MAC address)
 // Add each unit's MAC here after reading from serial output
@@ -612,7 +612,9 @@ void setup() {
 
   // Time sync
   Serial.println("[5/5] Sync time...");
-  configTime(-5 * 3600, 3600, "pool.ntp.org");
+  configTime(0, 0, "pool.ntp.org");
+  setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
+  tzset();
 
   int tries = 0;
   while (!getLocalTime(&tinfo) && tries < 8) {
@@ -1716,7 +1718,9 @@ void doConnect() {
     kbInput = "";
     selNetwork = -1;
 
-    configTime(-5 * 3600, 3600, "pool.ntp.org");
+    configTime(0, 0, "pool.ntp.org");
+    setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
+    tzset();
     int t = 0;
     while (!getLocalTime(&tinfo) && t < 8) { delay(500); t++; yield(); }
 
@@ -1846,10 +1850,15 @@ void checkTelegram() {
 
     // OTA Update Commands
     if (text == "/version") {
+      uint8_t mac[6];
+      WiFi.macAddress(mac);
+      char macStr[18];
+      snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
       String v = "📱 Firmware Info\n\n";
       v += "Version: v" + otaUpdater.getCurrentVersion() + "\n";
       v += "Board: ESP32-8048S043C\n";
       v += "Unit: " + String(friends[MY_FRIEND_INDEX].initials) + "\n";
+      v += "MAC: " + String(macStr) + "\n";
       v += "WiFi: " + WiFi.SSID() + "\n";
       v += "IP: " + WiFi.localIP().toString();
       bot.sendMessage(chatId, v, "");
