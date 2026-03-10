@@ -149,13 +149,13 @@ TAMC_GT911 ts = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, 800, 480)
 
 // Notification box
 #define NOTIF_W 305
-#define NOTIF_H 50
+#define NOTIF_H 75
 #define NOTIF_X (SCREEN_W - NOTIF_W - MARGIN)
-#define NOTIF_Y (MARGIN + Y_OFFSET)
+#define NOTIF_Y (MARGIN + Y_OFFSET - 17)
 
 // Friend buttons
-#define BTN_Y (10 + Y_OFFSET)
-#define BTN_H 50
+#define BTN_Y (3 + Y_OFFSET)
+#define BTN_H 65
 #define BTN_W 60
 #define BTN_GAP 6
 #define COMMIT_W 80
@@ -219,8 +219,8 @@ TAMC_GT911 ts = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, 800, 480)
 // TIMING CONSTANTS
 // ============================================================
 #define SPLASH_DURATION_MS 2500
-#define MSG_DISPLAY_TIME_MS 34000
-#define MSG_HIGHLIGHT_TIME_MS 30000
+#define MSG_DISPLAY_TIME_MS 60000
+#define MSG_HIGHLIGHT_TIME_MS 45000
 #define DAY_AUTO_RESET_MS 20000
 #define COMMIT_ANIM_DURATION 3000
 #define MAX_WIFI_NETWORKS 4
@@ -1034,7 +1034,7 @@ void drawButtons() {
 
     gfx->setTextSize(2);
     int tw = strlen(friends[i].initials) * 12;
-    gfx->setCursor(x + (BTN_W - tw) / 2, BTN_Y + 17);
+    gfx->setCursor(x + (BTN_W - tw) / 2, BTN_Y + 24);
     gfx->print(friends[i].initials);
 
     x += BTN_W + BTN_GAP;
@@ -1053,13 +1053,13 @@ void drawButtons() {
   gfx->setTextColor(COL_BLACK);
   gfx->setTextSize(2);
   if (commitPending) {
-    gfx->setCursor(x + 2, BTN_Y + 10);
+    gfx->setCursor(x + 2, BTN_Y + 17);
     gfx->print("Sure?");
     gfx->setTextSize(1);
-    gfx->setCursor(x + 8, BTN_Y + 32);
+    gfx->setCursor(x + 8, BTN_Y + 39);
     gfx->print("tap again");
   } else {
-    gfx->setCursor(x + 8, BTN_Y + 17);
+    gfx->setCursor(x + 8, BTN_Y + 24);
     gfx->print("Commit");
   }
 }
@@ -1070,12 +1070,21 @@ void drawNotificationBox() {
   gfx->fillRect(NOTIF_X + 2, NOTIF_Y + 2, NOTIF_W - 4, NOTIF_H - 4, 0x0011);
 
   if (scannerActive) {
+    int innerLeft  = NOTIF_X + 2;
+    int innerRight = NOTIF_X + NOTIF_W - 2;
     for (int g = 0; g < 5; g++) {
       uint16_t glowColor = gfx->color565(0, 80 - g * 15, 200 - g * 35);
-      gfx->fillRect(NOTIF_X + scannerPos - 15 + g * 3, NOTIF_Y + 3,
-                    12 - g * 2, NOTIF_H - 6, glowColor);
+      int gx = NOTIF_X + scannerPos - 15 + g * 3;
+      int gw = 12 - g * 2;
+      if (gx < innerLeft)             { gw -= (innerLeft - gx); gx = innerLeft; }
+      if (gx + gw > innerRight)       { gw = innerRight - gx; }
+      if (gw > 0) gfx->fillRect(gx, NOTIF_Y + 3, gw, NOTIF_H - 6, glowColor);
     }
-    gfx->fillRect(NOTIF_X + scannerPos, NOTIF_Y + 3, 10, NOTIF_H - 6, COL_WHITE);
+    int bx = NOTIF_X + scannerPos;
+    int bw = 10;
+    if (bx < innerLeft)               { bw -= (innerLeft - bx); bx = innerLeft; }
+    if (bx + bw > innerRight)         { bw = innerRight - bx; }
+    if (bw > 0) gfx->fillRect(bx, NOTIF_Y + 3, bw, NOTIF_H - 6, COL_WHITE);
   }
 
   for (int gx = NOTIF_X + 15; gx < NOTIF_X + NOTIF_W - 5; gx += 20) {
@@ -1218,12 +1227,12 @@ void drawTimer() {
       int textStartX = clipLeft + 10 - msgScrollPos;
       int firstVisibleChar = max(0, (clipLeft - textStartX) / charWidth);
       int visibleStartX = textStartX + firstVisibleChar * charWidth;
-      int charsVisible = (clipRight - visibleStartX) / charWidth + 1;
+      int drawX = max(clipLeft, visibleStartX);
+      int charsVisible = (clipRight - drawX) / charWidth;  // no +1: last char must END before clipRight
       int lastVisibleChar = min((int)currMsg.length(), firstVisibleChar + charsVisible);
 
       if (firstVisibleChar < lastVisibleChar) {
         String visibleText = currMsg.substring(firstVisibleChar, lastVisibleChar);
-        int drawX = max(clipLeft, visibleStartX);
         gfx->setCursor(drawX, textY);
         gfx->print(visibleText);
       }

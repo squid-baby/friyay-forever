@@ -1,12 +1,14 @@
 {
-  "version": "1.0.5",
+  "version": "1.0.6",
   "min_version": "1.0.0",
   "release_date": "2026-03-09",
-  "release_notes": "DST fix + Simon MAC discovery",
+  "release_notes": "UI polish + notification clipping fixes",
   "critical": false,
   "changelog": [
-    "Fixed daylight saving time handling with POSIX timezone rules (EST5EDT,M3.2.0,M11.1.0)",
-    "Added MAC address to /version Telegram output for unit identification",
-    "Changed unregistered unit fallback to ST identity to avoid NM collision"
+    "Enlarged friend buttons and notification bar, repositioned for enclosure fit",
+    "Fixed scanner glow bleeding outside notification frame on left edge",
+    "Fixed scrolling message text overflowing into AQI meter area",
+    "Extended message display time from 34s to 60s",
+    "First names in commit/uncommit messages (Nate, Simon, Graeme, Tony, Matt)"
   ]
 }
