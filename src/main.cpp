@@ -1,8 +1,12 @@
 /*
  * =====================================================
- * FRIYAY FOREVER - Protocol 1.0 (v27 - GHOST TOUCH FIX)
+ * FRIYAY FOREVER - Protocol 1.0 (v28 - KEYBOARD M FIX)
  * For ESP32-8048S043C (4.3" 800x480 RGB Display)
  * =====================================================
+ *
+ * v28 Changes from v27:
+ * - Fixed WiFi password keyboard: CAPS button was overlapping/covering the M key
+ * - Moved CAPS button right 1.5 key widths so M is fully visible and tappable
  *
  * v27 Changes from v26:
  * - Fixed phantom/ghost touch triggering random commits
@@ -542,8 +546,8 @@ void setup() {
 
   Serial.println();
   Serial.println("========================================");
-  Serial.println("  FRIYAY FOREVER Protocol 1.0 - v27");
-  Serial.println("  GHOST TOUCH FIX");
+  Serial.println("  FRIYAY FOREVER Protocol 1.0 - v28");
+  Serial.println("  KEYBOARD M FIX");
   Serial.println("========================================");
 
   // Resolve unit identity from MAC address
@@ -988,7 +992,7 @@ void showSplash() {
   gfx->setTextSize(2);
   gfx->setTextColor(COL_CYAN);
   gfx->setCursor(290, 250);
-  gfx->print("Protocol 1.0 v27");
+  gfx->print("Protocol 1.0 v28");
   gfx->setTextColor(COL_WHITE);
   gfx->setCursor(320, 300);
   gfx->print("Unit: ");
@@ -1571,10 +1575,10 @@ void drawKeyboard() {
     }
   }
 
-  gfx->fillRoundRect(500, 380, 90, keyH - 4, 4, capsOn ? COL_YELLOW : COL_GRAY);
+  gfx->fillRoundRect(602, 380, 90, keyH - 4, 4, capsOn ? COL_YELLOW : COL_GRAY);
   gfx->setTextColor(capsOn ? COL_BLACK : COL_WHITE);
   gfx->setTextSize(2);
-  gfx->setCursor(515, 390);
+  gfx->setCursor(617, 390);
   gfx->print("CAPS");
 
   gfx->fillRoundRect(35, 430, 450, keyH - 4, 4, COL_GRAY);
@@ -1615,7 +1619,7 @@ void handleKBTouch() {
     return;
   }
 
-  if (touchX >= 500 && touchX <= 590 && touchY >= 380 && touchY <= 416) {
+  if (touchX >= 602 && touchX <= 692 && touchY >= 380 && touchY <= 416) {
     capsOn = !capsOn;
     drawKeyboard();
     return;
