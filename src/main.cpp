@@ -878,7 +878,19 @@ void updateMorseLED() {
   FastLED.show();
 }
 
+bool isSleepTime() {
+  int totalMins = tinfo.tm_hour * 60 + tinfo.tm_min;
+  return totalMins >= (22 * 60 + 30) || totalMins < (7 * 60 + 30);
+}
+
 void updateLedAnimations() {
+  if (isSleepTime()) {
+    FastLED.setBrightness(25);  // ~10%
+    fill_solid(leds, LED_COUNT, CRGB(128, 0, 128));
+    FastLED.show();
+    return;
+  }
+  FastLED.setBrightness(LED_BRIGHTNESS);
   if (morseActive) {
     updateMorseLED();
   } else {
