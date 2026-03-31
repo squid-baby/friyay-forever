@@ -45,6 +45,7 @@
 #include <JPEGDEC.h>
 #include <Adafruit_ADS1X15.h>
 #include "qr_code.h"  // Embedded QR code image
+#include <PubSubClient.h>
 #include "ota_updates.h"  // OTA firmware updates
 
 // ============================================================
@@ -72,6 +73,11 @@ const int MAC_TABLE_SIZE = sizeof(MAC_TABLE) / sizeof(MAC_TABLE[0]);
 
 #define BOT_TOKEN "8274851974:AAEao868jidxcQEnY8IxPK91ujLmOsA_Alg"
 #define FRIYAY_SYNC_CHAT "-3682232331"
+
+// MQTT for commit sync (replaces broken Telegram self-read approach)
+#define MQTT_BROKER     "broker.hivemq.com"
+#define MQTT_PORT       1883
+#define MQTT_TOPIC      "friyay-forever-2026/commit"
 
 struct Friend {
   const char* initials;
@@ -366,6 +372,9 @@ unsigned long lastQRCheck = 0;
 // Network clients
 WiFiClientSecure client;
 UniversalTelegramBot bot(BOT_TOKEN, client);
+WiFiClient mqttWifi;
+PubSubClient mqttClient(mqttWifi);
+unsigned long lastMqttReconnect = 0;
 
 // Hardware
 Adafruit_ADS1115 ads;
@@ -444,6 +453,45 @@ void updateMorseLED();
 uint16_t getGradientColor(int segment, int maxSegments);
 void otaProgressCallback(int progress);
 void checkForOTAUpdates();
+void mqttCallback(char* topic, byte* payload, unsigned int length);
+void mqttConnect();
+
+// ============================================================
+// MQTT COMMIT SYNC
+// ============================================================
+
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  String text;
+  for (unsigned int i = 0; i < length; i++) text += (char)payload[i];
+
+  if (!text.startsWith("FRIYAY:")) return;
+  int colon = text.indexOf(':', 7);
+  if (colon < 0) return;
+  int idx = text.substring(7, colon).toInt();
+  bool committed = text.substring(colon + 1).toInt() == 1;
+  if (idx < 0 || idx >= NUM_FRIENDS) return;
+  if (idx == MY_FRIEND_INDEX) return;  // skip own echo
+
+  friends[idx].committed = committed;
+  drawButtons();
+  triggerScanner();
+  Serial.printf("[MQTT] Sync: friend %d committed=%d\n", idx, committed);
+}
+
+void mqttConnect() {
+  if (mqttClient.connected()) return;
+  unsigned long now = millis();
+  if (now - lastMqttReconnect < 5000) return;  // retry every 5s max
+  lastMqttReconnect = now;
+  String clientId = "friyay-" + WiFi.macAddress();
+  clientId.replace(":", "");
+  if (mqttClient.connect(clientId.c_str())) {
+    mqttClient.subscribe(MQTT_TOPIC);
+    Serial.println("[MQTT] Connected and subscribed");
+  } else {
+    Serial.printf("[MQTT] Connect failed, rc=%d\n", mqttClient.state());
+  }
+}
 
 // ============================================================
 // TOUCH INITIALIZATION & READING
@@ -641,6 +689,11 @@ void setup() {
   drawUI();
   displayQRPlaceholder();
 
+  // Initialize MQTT for commit sync
+  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+  mqttClient.setCallback(mqttCallback);
+  mqttConnect();
+
   // Initialize OTA updater
   otaUpdater.setProgressCallback(otaProgressCallback);
   Serial.printf("[OTA] Firmware version: %s\n", otaUpdater.getCurrentVersion().c_str());
@@ -701,6 +754,12 @@ void loop() {
   // Auto-cancel commit confirmation if timed out
   if (commitPending && (now - commitPendingTime >= COMMIT_CONFIRM_MS)) {
     cancelCommitConfirm();
+  }
+
+  // MQTT commit sync (non-blocking)
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!mqttClient.connected()) mqttConnect();
+    mqttClient.loop();
   }
 
   // Telegram check (15 seconds)
@@ -973,7 +1032,9 @@ void toggleCommit() {
     : "😢 " + String(friends[MY_FRIEND_INDEX].name) + " is OUT";
 
   broadcast(msg);
-  bot.sendMessage(FRIYAY_SYNC_CHAT, "FRIYAY:" + String(MY_FRIEND_INDEX) + ":" + (friends[MY_FRIEND_INDEX].committed ? "1" : "0"), "");
+  String syncMsg = "FRIYAY:" + String(MY_FRIEND_INDEX) + ":" + (friends[MY_FRIEND_INDEX].committed ? "1" : "0");
+  mqttClient.publish(MQTT_TOPIC, syncMsg.c_str());
+  Serial.printf("[MQTT] Published: %s\n", syncMsg.c_str());
   triggerScanner();
 
   if (friends[MY_FRIEND_INDEX].committed) {
@@ -1812,23 +1873,6 @@ void checkTelegram() {
     int64_t senderId = strtoll(bot.messages[i].chat_id.c_str(), NULL, 10);
 
     int fIdx = getFriendIdx(senderId);
-
-    // Sync channel: detect button commits from other consoles
-    // Note: match on prefix only — Bot API returns channel IDs with -100 prefix
-    // which differs from the web URL format, so we avoid a chatId comparison.
-    if (text.startsWith("FRIYAY:")) {
-      int colon = text.indexOf(':', 7);
-      if (colon > 0) {
-        int idx = text.substring(7, colon).toInt();
-        bool committed = text.substring(colon + 1).toInt() == 1;
-        if (idx >= 0 && idx < NUM_FRIENDS) {
-          friends[idx].committed = committed;
-          drawButtons();
-          triggerScanner();
-        }
-      }
-      continue;
-    }
 
     if (fIdx >= 0) {
       String t = text;
