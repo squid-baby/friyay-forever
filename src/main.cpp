@@ -75,7 +75,7 @@ const int MAC_TABLE_SIZE = sizeof(MAC_TABLE) / sizeof(MAC_TABLE[0]);
 #define FRIYAY_SYNC_CHAT "-3682232331"
 
 // MQTT for commit sync (replaces broken Telegram self-read approach)
-#define MQTT_BROKER     "broker.hivemq.com"
+#define MQTT_BROKER     "test.mosquitto.org"
 #define MQTT_PORT       1883
 #define MQTT_TOPIC      "friyay-forever-2026/commit"
 
@@ -692,6 +692,8 @@ void setup() {
   // Initialize MQTT for commit sync
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
   mqttClient.setCallback(mqttCallback);
+  mqttClient.setKeepAlive(60);
+  mqttClient.setSocketTimeout(5);
   mqttConnect();
 
   // Initialize OTA updater
