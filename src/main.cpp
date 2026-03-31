@@ -71,6 +71,7 @@ const MacMapping MAC_TABLE[] = {
 const int MAC_TABLE_SIZE = sizeof(MAC_TABLE) / sizeof(MAC_TABLE[0]);
 
 #define BOT_TOKEN "8274851974:AAEao868jidxcQEnY8IxPK91ujLmOsA_Alg"
+#define FRIYAY_SYNC_CHAT "-3682232331"
 
 struct Friend {
   const char* initials;
@@ -880,12 +881,12 @@ void updateMorseLED() {
 
 bool isSleepTime() {
   int totalMins = tinfo.tm_hour * 60 + tinfo.tm_min;
-  return totalMins >= (22 * 60 + 30) || totalMins < (7 * 60 + 30);
+  return totalMins >= (21 * 60 + 30) || totalMins < (7 * 60 + 30);
 }
 
 void updateLedAnimations() {
   if (isSleepTime()) {
-    FastLED.setBrightness(25);  // ~10%
+    FastLED.setBrightness(13);  // ~5%
     fill_solid(leds, LED_COUNT, CRGB(128, 0, 128));
     FastLED.show();
     return;
@@ -972,6 +973,7 @@ void toggleCommit() {
     : "😢 " + String(friends[MY_FRIEND_INDEX].name) + " is OUT";
 
   broadcast(msg);
+  bot.sendMessage(FRIYAY_SYNC_CHAT, "FRIYAY:" + String(MY_FRIEND_INDEX) + ":" + (friends[MY_FRIEND_INDEX].committed ? "1" : "0"), "");
   triggerScanner();
 
   if (friends[MY_FRIEND_INDEX].committed) {
@@ -1717,7 +1719,7 @@ void doConnect() {
   WiFi.begin(networks[selNetwork].c_str(), kbInput.c_str());
 
   int tries = 0;
-  while (WiFi.status() != WL_CONNECTED && tries < 15) {
+  while (WiFi.status() != WL_CONNECTED && tries < 30) {
     delay(400);
     gfx->print(".");
     tries++;
@@ -1762,7 +1764,6 @@ void doConnect() {
     gfx->setCursor(200, 220);
     gfx->print("Failed!");
     delay(1000);
-    kbInput = "";
     startWiFiSetup();
   }
 }
@@ -1811,6 +1812,23 @@ void checkTelegram() {
     int64_t senderId = strtoll(bot.messages[i].chat_id.c_str(), NULL, 10);
 
     int fIdx = getFriendIdx(senderId);
+
+    // Sync channel: detect button commits from other consoles
+    if (chatId == FRIYAY_SYNC_CHAT) {
+      if (text.startsWith("FRIYAY:")) {
+        int colon = text.indexOf(':', 7);
+        if (colon > 0) {
+          int idx = text.substring(7, colon).toInt();
+          bool committed = text.substring(colon + 1).toInt() == 1;
+          if (idx >= 0 && idx < NUM_FRIENDS) {
+            friends[idx].committed = committed;
+            drawButtons();
+            triggerScanner();
+          }
+        }
+      }
+      continue;
+    }
 
     if (fIdx >= 0) {
       String t = text;
