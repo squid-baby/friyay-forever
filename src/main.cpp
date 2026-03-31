@@ -1814,17 +1814,17 @@ void checkTelegram() {
     int fIdx = getFriendIdx(senderId);
 
     // Sync channel: detect button commits from other consoles
-    if (chatId == FRIYAY_SYNC_CHAT) {
-      if (text.startsWith("FRIYAY:")) {
-        int colon = text.indexOf(':', 7);
-        if (colon > 0) {
-          int idx = text.substring(7, colon).toInt();
-          bool committed = text.substring(colon + 1).toInt() == 1;
-          if (idx >= 0 && idx < NUM_FRIENDS) {
-            friends[idx].committed = committed;
-            drawButtons();
-            triggerScanner();
-          }
+    // Note: match on prefix only — Bot API returns channel IDs with -100 prefix
+    // which differs from the web URL format, so we avoid a chatId comparison.
+    if (text.startsWith("FRIYAY:")) {
+      int colon = text.indexOf(':', 7);
+      if (colon > 0) {
+        int idx = text.substring(7, colon).toInt();
+        bool committed = text.substring(colon + 1).toInt() == 1;
+        if (idx >= 0 && idx < NUM_FRIENDS) {
+          friends[idx].committed = committed;
+          drawButtons();
+          triggerScanner();
         }
       }
       continue;
