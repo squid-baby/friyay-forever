@@ -475,6 +475,10 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   friends[idx].committed = committed;
   drawButtons();
   triggerScanner();
+  String msg = committed
+    ? String(friends[idx].initials) + " is in, Fuk YEA!"
+    : String(friends[idx].initials) + " is OUT";
+  showMessage(msg);
   Serial.printf("[MQTT] Sync: friend %d committed=%d\n", idx, committed);
 }
 
@@ -1069,7 +1073,7 @@ void showSplash() {
   gfx->setTextSize(2);
   gfx->setTextColor(COL_CYAN);
   gfx->setCursor(290, 250);
-  gfx->print("Protocol 1.0 v28");
+  gfx->print("v" FIRMWARE_VERSION);
   gfx->setTextColor(COL_WHITE);
   gfx->setCursor(320, 300);
   gfx->print("Unit: ");
