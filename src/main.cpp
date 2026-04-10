@@ -75,9 +75,9 @@ const int MAC_TABLE_SIZE = sizeof(MAC_TABLE) / sizeof(MAC_TABLE[0]);
 #define FRIYAY_SYNC_CHAT "-3682232331"
 
 // MQTT for commit sync (replaces broken Telegram self-read approach)
-#define MQTT_BROKER     "broker.emqx.io"
-#define MQTT_PORT       1883
-#define MQTT_TOPIC      "friyay-forever-2026/commit"
+#define MQTT_BROKER       "broker.emqx.io"
+#define MQTT_PORT         1883
+#define MQTT_TOPIC_BASE   "friyay-forever-2026/commit"  // per-friend: .../0, .../1, etc.
 
 struct Friend {
   const char* initials;
@@ -490,7 +490,7 @@ bool mqttConnect(bool force) {
   String clientId = "friyay-" + WiFi.macAddress();
   clientId.replace(":", "");
   if (mqttClient.connect(clientId.c_str())) {
-    mqttClient.subscribe(MQTT_TOPIC);
+    mqttClient.subscribe(MQTT_TOPIC_BASE "/#");  // wildcard: gets all friend topics + retained state
     Serial.println("[MQTT] Connected and subscribed");
     return true;
   }
@@ -1041,8 +1041,9 @@ void toggleCommit() {
   broadcast(msg);
   String syncMsg = "FRIYAY:" + String(MY_FRIEND_INDEX) + ":" + (friends[MY_FRIEND_INDEX].committed ? "1" : "0");
   if (!mqttClient.connected()) mqttConnect(true);
-  if (mqttClient.publish(MQTT_TOPIC, syncMsg.c_str())) {
-    Serial.printf("[MQTT] Published: %s\n", syncMsg.c_str());
+  String topic = String(MQTT_TOPIC_BASE) + "/" + String(MY_FRIEND_INDEX);
+  if (mqttClient.publish(topic.c_str(), syncMsg.c_str(), true)) {  // retain=true
+    Serial.printf("[MQTT] Published (retained): %s -> %s\n", topic.c_str(), syncMsg.c_str());
   } else {
     Serial.printf("[MQTT] Publish FAILED (disconnected?): %s\n", syncMsg.c_str());
   }
@@ -2402,6 +2403,10 @@ void checkReset() {
   if (dayOfWeek == 5 && tinfo.tm_hour == 16 && tinfo.tm_min == 0 && tinfo.tm_sec < 2) {
     for (int i = 0; i < NUM_FRIENDS; i++) {
       friends[i].committed = false;
+      // Clear retained state on broker so reconnecting units start fresh
+      String topic = String(MQTT_TOPIC_BASE) + "/" + String(i);
+      String clearMsg = "FRIYAY:" + String(i) + ":0";
+      mqttClient.publish(topic.c_str(), clearMsg.c_str(), true);
     }
     broadcast("🔄 Reset! See you next Friday 🏂");
     drawButtons();
