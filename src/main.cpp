@@ -64,7 +64,7 @@ struct MacMapping {
 };
 const MacMapping MAC_TABLE[] = {
   {0x85, 0x6C, 0x38, 0},    // NM - MAC 10:51:DB:85:6C:38
-  // {0xXX, 0xXX, 0xXX, 1},  // ST - TODO: get MAC from Simon
+  {0xB3, 0xF3, 0x04, 1},    // ST - MAC 30:ED:A0:B3:F3:04
   {0x6E, 0x4A, 0xC8, 2},    // GO - MAC 10:20:BA:6E:4A:C8
   {0x6C, 0xB1, 0xE0, 3},    // TD - MAC 10:20:BA:6C:B1:E0
   {0x6E, 0x49, 0xC0, 4},    // MN - MAC 10:20:BA:6E:49:C0
@@ -454,7 +454,7 @@ uint16_t getGradientColor(int segment, int maxSegments);
 void otaProgressCallback(int progress);
 void checkForOTAUpdates();
 void mqttCallback(char* topic, byte* payload, unsigned int length);
-void mqttConnect();
+bool mqttConnect(bool force = false);
 
 // ============================================================
 // MQTT COMMIT SYNC
@@ -482,19 +482,20 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   Serial.printf("[MQTT] Sync: friend %d committed=%d\n", idx, committed);
 }
 
-void mqttConnect() {
-  if (mqttClient.connected()) return;
+bool mqttConnect(bool force) {
+  if (mqttClient.connected()) return true;
   unsigned long now = millis();
-  if (now - lastMqttReconnect < 5000) return;  // retry every 5s max
+  if (!force && now - lastMqttReconnect < 5000) return false;
   lastMqttReconnect = now;
   String clientId = "friyay-" + WiFi.macAddress();
   clientId.replace(":", "");
   if (mqttClient.connect(clientId.c_str())) {
     mqttClient.subscribe(MQTT_TOPIC);
     Serial.println("[MQTT] Connected and subscribed");
-  } else {
-    Serial.printf("[MQTT] Connect failed, rc=%d\n", mqttClient.state());
+    return true;
   }
+  Serial.printf("[MQTT] Connect failed, rc=%d\n", mqttClient.state());
+  return false;
 }
 
 // ============================================================
@@ -1039,8 +1040,12 @@ void toggleCommit() {
 
   broadcast(msg);
   String syncMsg = "FRIYAY:" + String(MY_FRIEND_INDEX) + ":" + (friends[MY_FRIEND_INDEX].committed ? "1" : "0");
-  mqttClient.publish(MQTT_TOPIC, syncMsg.c_str());
-  Serial.printf("[MQTT] Published: %s\n", syncMsg.c_str());
+  if (!mqttClient.connected()) mqttConnect(true);
+  if (mqttClient.publish(MQTT_TOPIC, syncMsg.c_str())) {
+    Serial.printf("[MQTT] Published: %s\n", syncMsg.c_str());
+  } else {
+    Serial.printf("[MQTT] Publish FAILED (disconnected?): %s\n", syncMsg.c_str());
+  }
   triggerScanner();
 
   if (friends[MY_FRIEND_INDEX].committed) {
