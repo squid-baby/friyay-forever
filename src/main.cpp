@@ -20,7 +20,10 @@
 #include "qr_code.h"  // Embedded QR code image
 #include <PubSubClient.h>
 #include "ota_updates.h"  // OTA firmware updates
-#include "secrets.h"  // BOT_TOKEN, FRIYAY_SYNC_CHAT, FRIEND_TG_* (gitignored)
+#include "layout.h"   // UI layout, colors, UI-timing #defines
+#include "config.h"   // Pins, MQTT/weather endpoints, Friend/MacMapping types
+#include "state.h"    // Scaffolding structs for next-PR migration — not yet referenced
+#include "secrets.h"  // Landing spot for NEW secrets only; existing BOT_TOKEN etc. stay inline per PLAN.md 1.2
 
 // ============================================================
 // CONFIGURATION - CHANGE THESE FOR EACH UNIT
@@ -30,12 +33,8 @@
 // To find a unit's MAC, check serial output at boot
 int MY_FRIEND_INDEX = 1;  // default fallback = ST (only unregistered unit)
 
-// MAC-to-owner lookup table (last 3 bytes of MAC address)
-// Add each unit's MAC here after reading from serial output
-struct MacMapping {
-  uint8_t mac3, mac4, mac5;  // last 3 octets
-  int friendIndex;
-};
+// MAC-to-owner lookup table (last 3 bytes of MAC address).
+// Add each unit's MAC here after reading from serial output.
 const MacMapping MAC_TABLE[] = {
   {0x85, 0x6C, 0x38, 0},    // NM - MAC 10:51:DB:85:6C:38
   {0xB3, 0xF3, 0x04, 1},    // ST - MAC 30:ED:A0:B3:F3:04
@@ -45,48 +44,25 @@ const MacMapping MAC_TABLE[] = {
 };
 const int MAC_TABLE_SIZE = sizeof(MAC_TABLE) / sizeof(MAC_TABLE[0]);
 
-// BOT_TOKEN and FRIYAY_SYNC_CHAT come from secrets.h.
+int lookupMacOwner(const uint8_t mac[6], const MacMapping* table, int tableSize) {
+  for (int i = 0; i < tableSize; i++) {
+    if (mac[3] == table[i].mac3 && mac[4] == table[i].mac4 && mac[5] == table[i].mac5) {
+      return table[i].friendIndex;
+    }
+  }
+  return -1;
+}
 
-// MQTT for commit sync (replaces broken Telegram self-read approach)
-#define MQTT_BROKER       "broker.emqx.io"
-#define MQTT_PORT         1883
-#define MQTT_TOPIC_BASE   "friyay-forever-2026/commit"  // per-friend: .../0, .../1, etc.
-
-struct Friend {
-  const char* initials;
-  const char* name;
-  int64_t telegramId;
-  bool committed;
-};
+#define BOT_TOKEN        "8274851974:AAEao868jidxcQEnY8IxPK91ujLmOsA_Alg"
+#define FRIYAY_SYNC_CHAT "-3682232331"
 
 Friend friends[] = {
-  {"NM", "Nate",   FRIEND_TG_NM, false},
-  {"ST", "Simon",  FRIEND_TG_ST, false},
-  {"GO", "Graeme", FRIEND_TG_GO, false},
-  {"TD", "Tony",   FRIEND_TG_TD, false},
-  {"MN", "Matt",   FRIEND_TG_MN, false}
+  {"NM", "Nate",   7612996805LL, false},
+  {"ST", "Simon",  7015581601LL, false},
+  {"GO", "Graeme", 8252040084LL, false},
+  {"TD", "Tony",   8293810017LL, false},
+  {"MN", "Matt",   8472668102LL, false}
 };
-#define NUM_FRIENDS 5
-
-#define LATITUDE 35.9132
-#define LONGITUDE -79.0558
-
-// ============================================================
-// PIN DEFINITIONS - ESP32-8048S043C
-// ============================================================
-#define GFX_BL 2
-#define MQ135_PIN 12
-
-// GT911 Touch
-#define TOUCH_SDA 19
-#define TOUCH_SCL 20
-#define TOUCH_INT 18
-#define TOUCH_RST 38
-
-// WS2812B LED Strip
-#define LED_PIN 13
-#define LED_COUNT 7
-#define LED_BRIGHTNESS 128
 
 // ============================================================
 // DISPLAY SETUP - ESP32-8048S043C
@@ -106,122 +82,14 @@ Arduino_RGB_Display *gfx = new Arduino_RGB_Display(800, 480, rgbpanel);
 // GT911 Touch
 TAMC_GT911 ts = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, 800, 480);
 
-// ============================================================
-// COLORS (RGB565)
-// ============================================================
-#define COL_BLACK       0x0000
-#define COL_WHITE       0xFFFF
-#define COL_YELLOW      0xFEA0
-#define COL_CYAN        0x07FF
-#define COL_GREEN       0x3CA4
-#define COL_VU_GREEN    0x07E0
-#define COL_RED         0xF800
-#define COL_ORANGE      0xFC40
-#define COL_GRAY        0x52AA
-#define COL_DARK_GRAY   0x31A6
-#define COL_SPOTIFY_BG  0x1807
-#define COL_SCANNER     0x055F
-#define COL_GRID        0x2115
-
-// ============================================================
-// LAYOUT CONSTANTS (800x480)
-// ============================================================
-#define SCREEN_W 800
-#define SCREEN_H 480
-#define MARGIN 15
-#define Y_OFFSET 12  // Shift entire UI down for enclosure alignment
-
-// GT911 raw-coord → screen-coord calibration. To recalibrate, tap each
-// corner, log the raw X/Y, and plug them in here. Raw X increases right-to-left,
-// raw Y increases top-to-bottom on this panel.
-#define TOUCH_RAW_X_AT_LEFT  792
-#define TOUCH_RAW_X_AT_RIGHT 325
-#define TOUCH_RAW_Y_AT_TOP   471
-#define TOUCH_RAW_Y_AT_BOT   209
-
-// Display column order is SAT..FRI (index 0..6). Arduino's tm_wday is SUN=0..SAT=6.
-// DISPLAY_DAY_MAP[col] gives the tm_wday value for column col.
-static const int DISPLAY_DAY_MAP[7] = {6, 0, 1, 2, 3, 4, 5};
-
-// Notification box
-#define NOTIF_W 305
-#define NOTIF_H 75
-#define NOTIF_X (SCREEN_W - NOTIF_W - MARGIN)
-#define NOTIF_Y (MARGIN + Y_OFFSET - 17)
-
-// Friend buttons
-#define BTN_Y (3 + Y_OFFSET)
-#define BTN_H 65
-#define BTN_W 60
-#define BTN_GAP 6
-#define COMMIT_W 80
-
-#define BOTTOM_LINE (SCREEN_H - MARGIN + Y_OFFSET)
-
-// Spotify/Album art area
-#define ALBUM_ART_W 225
-#define ALBUM_ART_H 280
-#define ALBUM_ART_DISPLAY_H 260  // art area height: covers header, flush with scan code
-#define SPOT_HEADER_H 45
-#define SPOT_TOTAL_H (SPOT_HEADER_H + ALBUM_ART_H)
-#define SPOT_BOTTOM BOTTOM_LINE
-#define SPOT_TOP (SPOT_BOTTOM - SPOT_TOTAL_H)
-#define ART_X (SCREEN_W - ALBUM_ART_W - MARGIN)
-#define ART_AREA_Y (SPOT_TOP + SPOT_HEADER_H)
-#define QR_OFFSET_X 22   // v26: Named constant
-#define QR_OFFSET_Y 10   // v26: Named constant
-
-// VU meters
-#define VU_W 38
-#define VU_GAP 10
-#define VU_TOTAL_W (VU_W * 2 + VU_GAP)
-#define VU_TO_ART_GAP 15
-#define VU_TO_PANEL_GAP 8
-#define VU_X (ART_X - VU_TO_ART_GAP - VU_TOTAL_W)
-#define VU_TOP SPOT_TOP
-#define VU_BOTTOM BOTTOM_LINE
-#define VU_H (VU_BOTTOM - VU_TOP)
-
-// Timer
-#define TIMER_H 140
-#define TIMER_BOTTOM BOTTOM_LINE
-#define TIMER_Y (TIMER_BOTTOM - TIMER_H)
-#define TIMER_X MARGIN
-#define TIMER_W (VU_X - VU_TO_PANEL_GAP - MARGIN)
-
-// Weather panel
-#define PANEL_X MARGIN
-#define PANEL_TOP SPOT_TOP
-#define PANEL_BOTTOM (TIMER_Y - 8)
-#define PANEL_H (PANEL_BOTTOM - PANEL_TOP)
-#define PANEL_W TIMER_W
-#define PANEL_Y PANEL_TOP
-
-// Days row
-#define DAY_H 28
-#define DAYS_Y (PANEL_TOP - 5 - DAY_H)
-#define HEADER_Y (DAYS_Y + DAY_H / 2)
-
-// Weather bars
-#define WEATHER_START_Y (PANEL_Y + 30)
-#define WEATHER_ROW_GAP ((PANEL_H - 25) / 3)
-#define BLOCK_SIZE 28
-#define BLOCK_GAP 4
-
-// Grid pattern
-#define GRID_SPACING 25
-
-// ============================================================
-// TIMING CONSTANTS
-// ============================================================
-#define SPLASH_DURATION_MS 2500
-#define MSG_DISPLAY_TIME_MS 60000
-#define MSG_HIGHLIGHT_TIME_MS 45000
-#define DAY_AUTO_RESET_MS 20000
-#define COMMIT_ANIM_DURATION 3000
-#define MAX_WIFI_NETWORKS 4
-#define MAX_BOUNCES 16
-#define SCANNER_SPEED 8
+// GT911 raw-coord → screen-coord calibration. To recalibrate, tap each screen
+// corner, log the raw X/Y (see "[TOUCH] DOWN raw=" in serial), and plug in here.
+// HIGH/LOW refer to the raw values: HIGH on X maps to screen X=0 (left edge) on
+// this panel, because raw X decreases left→right. Same for Y (raw HIGH = top).
+#define TOUCH_RAW_X_HIGH 792
+#define TOUCH_RAW_X_LOW  325
+#define TOUCH_RAW_Y_HIGH 471
+#define TOUCH_RAW_Y_LOW  209
 
 // Ghost touch filtering
 #define TOUCH_MIN_SIZE 3          // Minimum touch point size to accept (rejects noise spikes)
@@ -229,12 +97,10 @@ static const int DISPLAY_DAY_MAP[7] = {6, 0, 1, 2, 3, 4, 5};
 #define TOUCH_RAW_X_MAX 810       // Reject raw X above this (edge noise)
 #define TOUCH_RAW_Y_MIN 20        // Reject raw Y below this (edge noise)
 #define TOUCH_RAW_Y_MAX 500       // Reject raw Y above this (edge noise)
-#define COMMIT_CONFIRM_MS 3000    // Time window to confirm a commit with a second tap
 
-// LED breathing timing
-#define BREATH_NORMAL_CYCLE 480   // 8 seconds (4+4)
-#define BREATH_FAST_CYCLE 360     // 6 seconds (3+3)
-#define BREATH_FASTER_CYCLE 120   // 2 seconds (1+1)
+// Display column order is SAT..FRI (index 0..6). Arduino's tm_wday is SUN=0..SAT=6.
+// DISPLAY_DAY_MAP[col] gives the tm_wday value for column col.
+static const int DISPLAY_DAY_MAP[7] = {6, 0, 1, 2, 3, 4, 5};
 
 // Morse code pattern: durations in ms (positive=ON, negative=OFF)
 const int MORSE_PATTERN[] = {
@@ -334,10 +200,10 @@ int jpegBufferW = 0;             // width of image being decoded into buffer
 int jpegBufferH = 0;             // height of image being decoded into buffer
 
 // Touch
-enum TouchState { TOUCH_IDLE, TOUCH_PRESSED, TOUCH_HELD };
+enum TouchPhase { TOUCH_IDLE, TOUCH_PRESSED, TOUCH_HELD };
 int touchX = 0, touchY = 0;
 bool touchOK = false;
-TouchState touchState = TOUCH_IDLE;
+TouchPhase touchState = TOUCH_IDLE;
 bool wasTouched = false;
 int savedTouchX = 0, savedTouchY = 0;
 unsigned long ghostTouchCount = 0;  // Track rejected ghost touches for diagnostics
@@ -445,16 +311,27 @@ bool mqttConnect(bool force = false);
 // MQTT COMMIT SYNC
 // ============================================================
 
+// Parses "FRIYAY:<idx>:<0|1>" sync payloads. Returns true iff the payload is
+// well-formed AND idx is in [0, numFriends). Pure — no own-echo filtering
+// (caller handles that against its own identity).
+bool parseMqttCommit(const String& text, int& outIdx, bool& outCommitted, int numFriends) {
+  if (!text.startsWith("FRIYAY:")) return false;
+  int colon = text.indexOf(':', 7);
+  if (colon < 0) return false;
+  int idx = text.substring(7, colon).toInt();
+  if (idx < 0 || idx >= numFriends) return false;
+  outIdx = idx;
+  outCommitted = text.substring(colon + 1).toInt() == 1;
+  return true;
+}
+
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   String text;
   for (unsigned int i = 0; i < length; i++) text += (char)payload[i];
 
-  if (!text.startsWith("FRIYAY:")) return;
-  int colon = text.indexOf(':', 7);
-  if (colon < 0) return;
-  int idx = text.substring(7, colon).toInt();
-  bool committed = text.substring(colon + 1).toInt() == 1;
-  if (idx < 0 || idx >= NUM_FRIENDS) return;
+  int idx;
+  bool committed;
+  if (!parseMqttCommit(text, idx, committed, NUM_FRIENDS)) return;
   if (idx == MY_FRIEND_INDEX) return;  // skip own echo
 
   friends[idx].committed = committed;
@@ -540,8 +417,8 @@ bool checkTouch() {
           break;
         }
 
-        savedTouchX = map(rawX, TOUCH_RAW_X_AT_LEFT, TOUCH_RAW_X_AT_RIGHT, 0, SCREEN_W);
-        savedTouchY = map(rawY, TOUCH_RAW_Y_AT_TOP, TOUCH_RAW_Y_AT_BOT, 0, SCREEN_H);
+        savedTouchX = map(rawX, TOUCH_RAW_X_HIGH, TOUCH_RAW_X_LOW, 0, SCREEN_W);
+        savedTouchY = map(rawY, TOUCH_RAW_Y_HIGH, TOUCH_RAW_Y_LOW, 0, SCREEN_H);
         savedTouchX = constrain(savedTouchX, 0, SCREEN_W - 1);
         savedTouchY = constrain(savedTouchY, 0, SCREEN_H - 1);
 
@@ -593,12 +470,8 @@ void setup() {
   uint8_t mac[6];
   WiFi.macAddress(mac);
   Serial.printf("MAC: %02X:%02X:%02X:%02X:%02X:%02X\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-  for (int i = 0; i < MAC_TABLE_SIZE; i++) {
-    if (mac[3] == MAC_TABLE[i].mac3 && mac[4] == MAC_TABLE[i].mac4 && mac[5] == MAC_TABLE[i].mac5) {
-      MY_FRIEND_INDEX = MAC_TABLE[i].friendIndex;
-      break;
-    }
-  }
+  int owner = lookupMacOwner(mac, MAC_TABLE, MAC_TABLE_SIZE);
+  if (owner >= 0) MY_FRIEND_INDEX = owner;
   Serial.printf("Unit owner: %s\n\n", friends[MY_FRIEND_INDEX].initials);
 
   // Initialize display
@@ -1674,6 +1547,32 @@ void drawKeyboard() {
   gfx->print(".");
 }
 
+// Returns the character at (x, y) on the on-screen keyboard, or 0 if (x, y) is
+// not over a letter/number/symbol key. Caller still hit-tests specials (space,
+// backspace, caps, dot, done) because those have their own effects.
+char keyboardCharAt(int x, int y, bool capsOn) {
+  static const char* rows[] = {"!@#$%^&*()", "1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"};
+  static const int rowY[] = {200, 245, 290, 335, 380};
+  static const int rowX[] = {35, 35, 35, 70, 115};
+  const int keyW = 68;
+
+  for (int r = 0; r < 5; r++) {
+    if (y >= rowY[r] && y < rowY[r] + 40) {
+      int kx = x - rowX[r];
+      if (kx >= 0) {
+        int k = kx / keyW;
+        int len = strlen(rows[r]);
+        if (k < len) {
+          char c = rows[r][k];
+          if (!capsOn && c >= 'A' && c <= 'Z') c += 32;
+          return c;
+        }
+      }
+    }
+  }
+  return 0;
+}
+
 void handleKBTouch() {
   if (touchX >= 605 && touchX <= 695 && touchY >= 430 && touchY <= 466) {
     kbVisible = false;
@@ -1707,26 +1606,10 @@ void handleKBTouch() {
     return;
   }
 
-  const char* rows[] = {"!@#$%^&*()", "1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"};
-  int rowY[] = {200, 245, 290, 335, 380};
-  int rowX[] = {35, 35, 35, 70, 115};
-  int keyW = 68;
-
-  for (int r = 0; r < 5; r++) {
-    if (touchY >= rowY[r] && touchY < rowY[r] + 40) {
-      int kx = touchX - rowX[r];
-      if (kx >= 0) {
-        int k = kx / keyW;
-        int len = strlen(rows[r]);
-        if (k < len) {
-          char c = rows[r][k];
-          if (!capsOn && c >= 'A' && c <= 'Z') c += 32;
-          kbInput += c;
-          drawKeyboard();
-          return;
-        }
-      }
-    }
+  char c = keyboardCharAt(touchX, touchY, capsOn);
+  if (c) {
+    kbInput += c;
+    drawKeyboard();
   }
 }
 
