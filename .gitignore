@@ -7,9 +7,14 @@
 .vscode/launch.json
 .vscode/ipch
 
-# Compiled binaries (we'll add firmware.bin manually when releasing)
+# Compiled binaries — OTA ships firmware.bin from GitHub Releases, not from the repo
 *.elf
 *.map
+firmware.bin
+
+# Generated at build time from FIRMWARE_VERSION (see scripts/gen_version_json.py).
+# Uploaded as a GitHub Release asset alongside firmware.bin; not a source file.
+version.json
 
 # macOS files
 .DS_Store
@@ -36,6 +41,7 @@ __pycache__/
 # Local environment files (never commit secrets!)
 .env
 .env.local
+src/secrets.h
 secrets.h
 
 # Claude settings (local only)

@@ -44,10 +44,23 @@ The OTA system hits `https://api.github.com/repos/squid-baby/friyay-forever/rele
 
 | File | Purpose |
 |------|---------|
-| `src/main.cpp` | All firmware logic (~2400 lines) |
+| `src/main.cpp` | Firmware wiring — setup, loop, handlers, hardware init |
+| `src/layout.h` | UI layout: screen dimensions, panel positions, colors, UI timing |
+| `src/config.h` | Hardware config: pins, Friend/MacMapping types, MQTT/weather endpoints |
+| `src/state.h` | Runtime state structs — scaffolding, migration pending |
+| `src/secrets.h` | Landing spot for **new** secrets (gitignored); `secrets.example.h` committed |
 | `src/ota_updates.h` | OTA updater class, GitHub Releases API |
 | `src/qr_code.h` | QR code display helper |
-| `platformio.ini` | Board config, FIRMWARE_VERSION, dependencies |
+| `platformio.ini` | Board config, `FIRMWARE_VERSION`, dependencies |
+| `scripts/gen_version_json.py` | Post-build: regenerates `version.json` from `FIRMWARE_VERSION` |
+| `PLAN.md` | Phased execution plan; each phase lands as its own PR |
+| `CHANGELOG.md` | Human-readable version history; Keep-a-Changelog format |
+
+## Secrets policy
+
+Existing `BOT_TOKEN`, `FRIYAY_SYNC_CHAT`, and friend Telegram IDs **stay inline in `main.cpp`** — this is deliberate per PLAN §1.2. Risk is scoped to the bot itself (not any personal Telegram account), and moving them to a gitignored file would complicate fresh clones/CI for no real security gain.
+
+**New** secrets (future API keys, private endpoints, etc.) go in `src/secrets.h`, with the shape mirrored in the committed `secrets.example.h`.
 
 ## Ports
 

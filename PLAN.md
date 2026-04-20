@@ -24,31 +24,31 @@ Hygiene and test infrastructure come first. Runtime fixes come second because (a
 Goal: make the codebase legible enough that a fresh agent session can reason about one subsystem without loading everything, and set up the boundaries the test phase depends on.
 
 ### 1.1 Repo hygiene
-- [ ] Remove `firmware.bin` from git tree; add to `.gitignore`
-- [ ] Make `platformio.ini` `FIRMWARE_VERSION` the single source of truth
-- [ ] Auto-generate `version.json` from a PlatformIO `extra_scripts` post-build hook
-- [ ] Seed `CHANGELOG.md` from git tags; make version-bump workflow update it
+- [x] Remove `firmware.bin` from git tree; add to `.gitignore`
+- [x] Make `platformio.ini` `FIRMWARE_VERSION` the single source of truth
+- [x] Auto-generate `version.json` from a PlatformIO `extra_scripts` post-build hook
+- [x] Seed `CHANGELOG.md` from git tags _(seeded from commit log; version-bump automation deferred)_
 
 ### 1.2 Secrets pattern (new secrets only)
 Per owner decision on PR #2, the existing Telegram bot token **stays in source** — risk is scoped to the bot itself. The secrets pattern is for everything going forward.
-- [ ] Create `src/secrets.example.h` (committed, documents the shape)
-- [ ] Create `src/secrets.h` (gitignored — already gitignored, just needs to be the landing spot)
-- [ ] Migration: new secrets land in `secrets.h`. Existing `BOT_TOKEN`, friend Telegram IDs, MQTT broker URL stay inline for now; note in `CLAUDE.md` that this is deliberate.
+- [x] Create `src/secrets.example.h` (committed, documents the shape)
+- [x] Create `src/secrets.h` (gitignored — already gitignored, just needs to be the landing spot)
+- [x] Migration: new secrets land in `secrets.h`. Existing `BOT_TOKEN`, friend Telegram IDs, MQTT broker URL stay inline for now; note in `CLAUDE.md` that this is deliberate.
 
 ### 1.3 Name the magic numbers
-- [ ] Touch calibration: `TOUCH_RAW_X_HIGH`, `TOUCH_RAW_X_LOW`, `TOUCH_RAW_Y_HIGH`, `TOUCH_RAW_Y_LOW` with a one-line comment describing how to re-derive them
-- [ ] Hoist the `dayMap[] = {6, 0, 1, 2, 3, 4, 5}` duplicate (`main.cpp:998` and `main.cpp:1188`) to one named constant
+- [x] Touch calibration: `TOUCH_RAW_X_HIGH`, `TOUCH_RAW_X_LOW`, `TOUCH_RAW_Y_HIGH`, `TOUCH_RAW_Y_LOW` with a one-line comment describing how to re-derive them
+- [x] Hoist the `dayMap[] = {6, 0, 1, 2, 3, 4, 5}` duplicate to one named constant `DISPLAY_DAY_MAP`
 
 ### 1.4 Extract pure logic (enables Phase 2)
-- [ ] `calcWeatherLevels(float temp, float rainMm, int& wet, int& tmp, int& fuk)` — consolidates the ~90% duplication between `calcWeather()` and `calcWeatherForDay()`
-- [ ] `lookupMacOwner(uint8_t mac[6]) -> int` — pure function, currently inlined in `setup()`
-- [ ] `parseMqttCommit(const String& text, int& idx, bool& committed) -> bool` — pure function, currently inlined in `mqttCallback()`
-- [ ] `keyboardCharAt(int x, int y, bool capsOn) -> char` — pure function, currently inlined in `handleKBTouch()`
+- [x] `calcWeatherLevels(float temp, float rainMm, int& wet, int& tmp, int& fuk)` — consolidates the ~90% duplication between `calcWeather()` and `calcWeatherForDay()`
+- [x] `lookupMacOwner(const uint8_t mac[6], const MacMapping* table, int tableSize) -> int` — signature extended with table + size for native-test isolation
+- [x] `parseMqttCommit(const String& text, int& outIdx, bool& outCommitted, int numFriends) -> bool` — own-echo filtering stays in caller (pure check + parse only)
+- [x] `keyboardCharAt(int x, int y, bool capsOn) -> char`
 
 ### 1.5 File splits (lightweight — not the full module split)
-- [ ] `src/config.h` — MAC table, `friends[]`, Telegram/MQTT/weather config, pin definitions
-- [ ] `src/layout.h` — all UI layout `#defines` (screen dimensions, panel positions, color constants)
-- [ ] `src/state.h` — grouped state structs: `WeatherState`, `SpotifyState`, `CommitState`, `TouchState`, `LedState`
+- [x] `src/config.h` — `MacMapping` / `Friend` structs, pins, MQTT broker config, weather location. Table **instances** (`MAC_TABLE[]`, `friends[]`) remain defined in `main.cpp` with their literal values.
+- [x] `src/layout.h` — all UI layout `#defines` (screen dimensions, panel positions, color constants, UI timing)
+- [x] `src/state.h` — grouped state structs: `WeatherState`, `SpotifyState`, `CommitState`, `TouchState`, `LedState`. **Scaffolding only** — `main.cpp` still reads/writes raw globals. Existing `enum TouchState` renamed to `TouchPhase` to free the name. Full migration lands in a follow-up PR.
 
 Keep `main.cpp` as the wiring file. Full `src/ui/` `src/net/` `src/hw/` split is **deferred** until `main.cpp` exceeds 3k lines — diminishing returns before then.
 
