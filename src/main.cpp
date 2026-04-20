@@ -701,8 +701,10 @@ void setup() {
 
   client.setInsecure();
   client.setTimeout(1500);
-  // Cap TLS handshake so a flaky network can't wedge Telegram for >3s.
-  client.setHandshakeTimeout(3);
+  // Cap TLS handshake so a flaky network can't wedge Telegram for >9 s.
+  // 3 s was too aggressive — api.telegram.org regularly takes 4–6 s on first
+  // handshake, leading to silent getUpdates() failures every poll.
+  client.setHandshakeTimeout(8);
   getWeather();
 
   wifiStrength = calculateWifiStrength(WiFi.RSSI());
@@ -1835,7 +1837,7 @@ void doConnect() {
 
     client.setInsecure();
     client.setTimeout(1500);
-    client.setHandshakeTimeout(3);
+    client.setHandshakeTimeout(8);
     getWeather();
     wifiStrength = calculateWifiStrength(WiFi.RSSI());
 
