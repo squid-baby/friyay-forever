@@ -10,12 +10,12 @@
 
 Hygiene and test infrastructure come first. Runtime fixes come second because (a) they require restructured, testable code to verify the fix sticks, and (b) without tests any runtime refactor risks silent regressions on already-flaky behavior. AI documentation lands last so it can describe the system as it actually is, not as we're mid-refactoring it.
 
-| Phase | Theme | Blocks |
-|---|---|---|
-| 1 | Organization & hygiene | Phases 2, 3 |
-| 2 | Test coverage | Phase 3 (tests prove runtime fix) |
-| 3 | Runtime fluidity (kill the freeze) | — |
-| 4 | AI integration & self-documentation | — |
+| Phase | Theme | Blocks | Status |
+|---|---|---|---|
+| 1 | Organization & hygiene | Phases 2, 3 | partial (in PR #3 / PR #4) |
+| 2 | Test coverage | Phase 3 (tests prove runtime fix) | ✅ merged (PR #4) |
+| 3 | Runtime fluidity (kill the freeze) | — | 3.2.1 + 3.2.3 landed; 3.2.2 deferred |
+| 4 | AI integration & self-documentation | — | pending |
 
 ---
 
@@ -113,11 +113,11 @@ Symptom: touch unresponsive, LED animation stutters, countdown visibly jumps.
 ### 3.2 Fix — in order, least-invasive first
 
 **3.2.1 Explicit short timeouts (quickest win, no arch change)**
-- [ ] Set `http.setConnectTimeout(2000)` + `http.setTimeout(3000)` on every HTTPClient instance
-- [ ] Swap `UniversalTelegramBot` for `AsyncTelegram2` (non-blocking) — or keep it and wrap `bot.getUpdates()` in a short-timeout client
-- [ ] Shrink WiFi reconnect to non-blocking `WiFi.begin()` + single-attempt check per loop iteration
+- [x] Set `http.setConnectTimeout(2000)` + `http.setTimeout(3000)` on every HTTPClient instance
+- [x] ~~Swap `UniversalTelegramBot` for `AsyncTelegram2` (non-blocking)~~ — kept bot; capped `WiFiClientSecure.setHandshakeTimeout(3)` + preserved `setTimeout(1500)` to cap Telegram blocking at ~4.5 s
+- [x] Shrink WiFi reconnect to non-blocking `WiFi.begin()` + single-attempt check per loop iteration
 
-**3.2.2 Dual-core task split**
+**3.2.2 Dual-core task split** _(deferred — separate PR)_
 - [ ] Network task pinned to **core 0**: WiFi, Telegram poll, MQTT loop, weather, Spotify, OTA check
 - [ ] UI task pinned to **core 1**: touch, drawing, LED animation, countdown timer
 - [ ] State handoff via FreeRTOS queues:
@@ -126,8 +126,8 @@ Symptom: touch unresponsive, LED animation stutters, countdown visibly jumps.
   - `touchEventQueue` — touch ISR → UI task (already partially there)
 
 **3.2.3 Freeze detection (regression guard)**
-- [ ] Instrument main-loop iteration time; log when a tick exceeds 100 ms
-- [ ] Add a counter exposed via `/diag` Telegram command so we can verify the fix sticks in production
+- [x] Instrument main-loop iteration time; log when a tick exceeds 100 ms
+- [x] Add a counter exposed via `/diag` Telegram command so we can verify the fix sticks in production
 
 ### 3.3 Explicitly NOT in Phase 3
 Per reviewer scoping: `AsyncMqttClient`, `esp32FOTA`, signed OTA, A/B partition OTA, MQTT broker auth, LVGL migration. All deferred.

@@ -56,6 +56,7 @@
 #include "pure/message_sanitize.h"
 #include "pure/friend_lookup.h"
 #include "pure/countdown.h"
+#include "pure/loop_stats.h"
 
 // ============================================================
 // CONFIGURATION - CHANGE THESE FOR EACH UNIT
@@ -375,6 +376,19 @@ unsigned long lastSensor = 0;
 unsigned long lastAnim = 0;
 unsigned long lastQRCheck = 0;
 
+// Non-blocking WiFi reconnect state (Phase 3.2.1). The old blocking `tryConnect()`
+// was called straight from the main loop and stalled the UI for up to 10 s on
+// every drop; `maintainWifi()` replaces it with a throttled kick.
+unsigned long wifiDisconnectedSince = 0;
+unsigned long lastWifiReconnectKick = 0;
+static const unsigned long WIFI_RECONNECT_INTERVAL_MS = 10000;   // kick at most every 10 s
+static const unsigned long WIFI_SETUP_FALLBACK_MS     = 120000;  // 2 min down → captive portal
+
+// Main-loop freeze detection (Phase 3.2.3). Tracks worst/mean tick and counts
+// ticks that exceed FREEZE_THRESHOLD_MS; readable via /diag.
+static const uint32_t FREEZE_THRESHOLD_MS = 100;
+pure::LoopStats loopStats;
+
 // Network clients
 WiFiClientSecure client;
 UniversalTelegramBot bot(BOT_TOKEN, client);
@@ -422,6 +436,7 @@ void drawNetList();
 void drawKeyboard();
 void doConnect();
 void tryConnect();
+void maintainWifi();
 void handleRoot();
 void checkTelegram();
 void showMessage(String msg);
@@ -606,6 +621,8 @@ void setup() {
   Serial.println("  KEYBOARD M FIX");
   Serial.println("========================================");
 
+  pure::initLoopStats(loopStats, FREEZE_THRESHOLD_MS);
+
   // Resolve unit identity from MAC address
   uint8_t mac[6];
   WiFi.macAddress(mac);
@@ -684,6 +701,8 @@ void setup() {
 
   client.setInsecure();
   client.setTimeout(1500);
+  // Cap TLS handshake so a flaky network can't wedge Telegram for >3s.
+  client.setHandshakeTimeout(3);
   getWeather();
 
   wifiStrength = calculateWifiStrength(WiFi.RSSI());
@@ -713,11 +732,16 @@ void setup() {
 // ============================================================
 
 void loop() {
+  // Tick instrumentation (Phase 3.2.3). Captured before the early-return for
+  // the captive-portal path so freezes there show up in /diag too.
+  unsigned long iterStart = millis();
+
   if (inSetup) {
     dns.processNextRequest();
     server.handleClient();
     if (checkTouch()) handleSetupTouch();
     delay(10);
+    pure::recordTick(loopStats, (uint32_t)(millis() - iterStart));
     return;
   }
 
@@ -799,14 +823,18 @@ void loop() {
 
   if (checkTouch()) handleTouch();
 
-  // WiFi maintenance
-  if (WiFi.status() != WL_CONNECTED) {
-    wifiOK = false;
-    tryConnect();
-    if (!wifiOK) startWiFiSetup();
-  }
+  // WiFi maintenance — non-blocking. Throttled reconnect kicks; only falls
+  // through to startWiFiSetup() after a sustained outage.
+  maintainWifi();
 
   delay(10);
+
+  uint32_t tickMs = (uint32_t)(millis() - iterStart);
+  pure::recordTick(loopStats, tickMs);
+  if (tickMs > FREEZE_THRESHOLD_MS) {
+    Serial.printf("[FREEZE] tick=%ums (threshold %ums)\n",
+                  (unsigned)tickMs, (unsigned)FREEZE_THRESHOLD_MS);
+  }
 }
 
 // ============================================================
@@ -1807,6 +1835,7 @@ void doConnect() {
 
     client.setInsecure();
     client.setTimeout(1500);
+    client.setHandshakeTimeout(3);
     getWeather();
     wifiStrength = calculateWifiStrength(WiFi.RSSI());
 
@@ -1843,6 +1872,34 @@ void tryConnect() {
   }
 
   wifiOK = (WiFi.status() == WL_CONNECTED);
+}
+
+// Called every main-loop iteration. Returns immediately; never blocks the UI.
+// - If WiFi is up: clear disconnect tracking and return.
+// - If down: kick WiFi.begin() at most once per WIFI_RECONNECT_INTERVAL_MS.
+// - If down for longer than WIFI_SETUP_FALLBACK_MS: hand off to the captive
+//   portal (full-screen UI takeover is acceptable at that point).
+void maintainWifi() {
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiOK = true;
+    wifiDisconnectedSince = 0;
+    return;
+  }
+
+  wifiOK = false;
+  unsigned long now = millis();
+  if (wifiDisconnectedSince == 0) wifiDisconnectedSince = now;
+
+  if (now - wifiDisconnectedSince > WIFI_SETUP_FALLBACK_MS) {
+    startWiFiSetup();
+    return;
+  }
+
+  if (now - lastWifiReconnectKick >= WIFI_RECONNECT_INTERVAL_MS) {
+    lastWifiReconnectKick = now;
+    WiFi.disconnect();
+    WiFi.begin(savedSSID.c_str(), savedPass.c_str());
+  }
 }
 
 void handleRoot() {
@@ -1904,7 +1961,8 @@ void checkTelegram() {
       help += "📱 System:\n";
       help += "/version - Firmware info\n";
       help += "/update - Check for updates\n";
-      help += "/install - Install update\n\n";
+      help += "/install - Install update\n";
+      help += "/diag - Loop/WiFi/heap diagnostics\n\n";
       help += "Or just say 'in' or 'out'";
       bot.sendMessage(chatId, help, "");
       continue;
@@ -1925,6 +1983,25 @@ void checkTelegram() {
     if (text == "/weather") {
       String w = "🌤️ Chapel Hill\n\n🌡️ " + String((int)currTemp) + "°F\n💧 " + String(precipitation, 1) + "mm\n🏂 Score: " + String(fukLvl * 10) + "/100";
       bot.sendMessage(chatId, w, "");
+      continue;
+    }
+
+    if (text == "/diag") {
+      uint32_t mean   = pure::meanTickMs(loopStats);
+      uint32_t slowBp = pure::slowTickBasisPoints(loopStats);
+      uint32_t uptimeMin = millis() / 60000u;
+      String d = "🩺 Diagnostics\n\n";
+      d += "Uptime: " + String(uptimeMin) + " min\n";
+      d += "Loop samples: " + String(loopStats.sampleCount) + "\n";
+      d += "Max tick: " + String(loopStats.maxMs) + " ms\n";
+      d += "Mean tick: " + String(mean) + " ms\n";
+      d += "Slow ticks (>" + String(FREEZE_THRESHOLD_MS) + " ms): ";
+      d += String(loopStats.slowCount) + " (" + String(slowBp) + " bp)\n\n";
+      d += "WiFi: " + String(wifiOK ? "up" : "DOWN") + "\n";
+      d += "MQTT: " + String(mqttClient.connected() ? "up" : "DOWN") + "\n";
+      d += "Free heap: " + String(ESP.getFreeHeap()) + " B\n";
+      d += "RSSI: " + String(WiFi.RSSI()) + " dBm";
+      bot.sendMessage(chatId, d, "");
       continue;
     }
 
@@ -2058,7 +2135,8 @@ void fetchSpotifyArt() {
   HTTPClient http;
   String url = "https://open.spotify.com/oembed?url=https://open.spotify.com/track/" + trackId;
   http.begin(url);
-  http.setTimeout(5000);
+  http.setConnectTimeout(2000);
+  http.setTimeout(3000);
 
   if (http.GET() == 200) {
     String payload = http.getString();
@@ -2087,7 +2165,9 @@ uint8_t* downloadImageFromUrl(String url, int* outLen) {
 
   HTTPClient http;
   http.begin(url);
-  http.setTimeout(10000);
+  // Connect fast; give the body a longer window because album art can be ~50 KB.
+  http.setConnectTimeout(2000);
+  http.setTimeout(5000);
 
   if (http.GET() != 200) {
     http.end();
@@ -2248,7 +2328,8 @@ void getWeather() {
     LATITUDE, LONGITUDE);
 
   http.begin(url);
-  http.setTimeout(10000);
+  http.setConnectTimeout(2000);
+  http.setTimeout(3000);
 
   if (http.GET() == 200) {
     String resp = http.getString();

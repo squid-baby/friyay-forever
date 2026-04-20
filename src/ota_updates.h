@@ -114,9 +114,11 @@ public:
         // Use WiFiClientSecure for HTTPS
         WiFiClientSecure client;
         client.setInsecure();  // Skip certificate verification for simplicity
+        client.setHandshakeTimeout(5);
 
         HTTPClient http;
         http.begin(client, GITHUB_API_URL);
+        http.setConnectTimeout(3000);
         http.setTimeout(OTA_HTTP_TIMEOUT);
         http.addHeader("Accept", "application/vnd.github.v3+json");
         http.addHeader("User-Agent", "ESP32-OTA-Updater");
@@ -274,9 +276,11 @@ public:
         // Use WiFiClientSecure for HTTPS GitHub download
         WiFiClientSecure client;
         client.setInsecure();
+        client.setHandshakeTimeout(5);
 
         HTTPClient http;
         http.begin(client, _firmwareUrl);
+        http.setConnectTimeout(3000);
         http.setTimeout(OTA_DOWNLOAD_TIMEOUT);
         http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);  // GitHub redirects to CDN
 
@@ -412,9 +416,11 @@ private:
 
         WiFiClientSecure client;
         client.setInsecure();
+        client.setHandshakeTimeout(5);
 
         HTTPClient http;
         http.begin(client, url);
+        http.setConnectTimeout(3000);
         http.setTimeout(OTA_HTTP_TIMEOUT);
         http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 
