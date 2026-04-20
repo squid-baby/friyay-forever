@@ -38,6 +38,7 @@
 #include <HTTPClient.h>
 #include <Update.h>
 #include <ArduinoJson.h>
+#include "pure/semver.h"
 
 // ============================================================
 // CONFIGURATION - UPDATE THESE FOR YOUR GITHUB REPO
@@ -444,46 +445,9 @@ private:
         Serial.printf("[OTA] Metadata: critical=%d\n", _isCritical);
     }
 
-    // Compare semantic versions (e.g., "1.2.3" vs "1.2.4")
-    // Returns true if 'newer' is greater than 'current'
+    // Thin wrappers around the pure semver helpers (see src/pure/semver.h).
     bool isNewerVersion(const String& newer, const String& current) {
-        if (current == "unknown") return true;
-
-        int newMajor = 0, newMinor = 0, newPatch = 0;
-        int curMajor = 0, curMinor = 0, curPatch = 0;
-
-        parseVersion(newer, newMajor, newMinor, newPatch);
-        parseVersion(current, curMajor, curMinor, curPatch);
-
-        if (newMajor > curMajor) return true;
-        if (newMajor < curMajor) return false;
-
-        if (newMinor > curMinor) return true;
-        if (newMinor < curMinor) return false;
-
-        return newPatch > curPatch;
-    }
-
-    // Parse version string "X.Y.Z" into components
-    void parseVersion(const String& ver, int& major, int& minor, int& patch) {
-        major = minor = patch = 0;
-
-        int firstDot = ver.indexOf('.');
-        if (firstDot < 0) {
-            major = ver.toInt();
-            return;
-        }
-
-        major = ver.substring(0, firstDot).toInt();
-
-        int secondDot = ver.indexOf('.', firstDot + 1);
-        if (secondDot < 0) {
-            minor = ver.substring(firstDot + 1).toInt();
-            return;
-        }
-
-        minor = ver.substring(firstDot + 1, secondDot).toInt();
-        patch = ver.substring(secondDot + 1).toInt();
+        return pure::isNewerVersion(newer.c_str(), current.c_str());
     }
 };
 

@@ -48,6 +48,15 @@
 #include <PubSubClient.h>
 #include "ota_updates.h"  // OTA firmware updates
 
+// Pure logic (extracted for host-native unit testing).
+#include "pure/mac_lookup.h"
+#include "pure/mqtt_parse.h"
+#include "pure/keyboard_logic.h"
+#include "pure/weather_logic.h"
+#include "pure/message_sanitize.h"
+#include "pure/friend_lookup.h"
+#include "pure/countdown.h"
+
 // ============================================================
 // CONFIGURATION - CHANGE THESE FOR EACH UNIT
 // ============================================================
@@ -57,11 +66,8 @@
 int MY_FRIEND_INDEX = 1;  // default fallback = ST (only unregistered unit)
 
 // MAC-to-owner lookup table (last 3 bytes of MAC address)
-// Add each unit's MAC here after reading from serial output
-struct MacMapping {
-  uint8_t mac3, mac4, mac5;  // last 3 octets
-  int friendIndex;
-};
+// Add each unit's MAC here after reading from serial output.
+// `MacMapping` is declared in src/pure/mac_lookup.h.
 const MacMapping MAC_TABLE[] = {
   {0x85, 0x6C, 0x38, 0},    // NM - MAC 10:51:DB:85:6C:38
   {0xB3, 0xF3, 0x04, 1},    // ST - MAC 30:ED:A0:B3:F3:04
@@ -464,13 +470,9 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   String text;
   for (unsigned int i = 0; i < length; i++) text += (char)payload[i];
 
-  if (!text.startsWith("FRIYAY:")) return;
-  int colon = text.indexOf(':', 7);
-  if (colon < 0) return;
-  int idx = text.substring(7, colon).toInt();
-  bool committed = text.substring(colon + 1).toInt() == 1;
-  if (idx < 0 || idx >= NUM_FRIENDS) return;
-  if (idx == MY_FRIEND_INDEX) return;  // skip own echo
+  int idx = -1;
+  bool committed = false;
+  if (!pure::parseMqttCommit(text.c_str(), NUM_FRIENDS, MY_FRIEND_INDEX, idx, committed)) return;
 
   friends[idx].committed = committed;
   drawButtons();
@@ -608,12 +610,7 @@ void setup() {
   uint8_t mac[6];
   WiFi.macAddress(mac);
   Serial.printf("MAC: %02X:%02X:%02X:%02X:%02X:%02X\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-  for (int i = 0; i < MAC_TABLE_SIZE; i++) {
-    if (mac[3] == MAC_TABLE[i].mac3 && mac[4] == MAC_TABLE[i].mac4 && mac[5] == MAC_TABLE[i].mac5) {
-      MY_FRIEND_INDEX = MAC_TABLE[i].friendIndex;
-      break;
-    }
-  }
+  MY_FRIEND_INDEX = pure::lookupMacOwner(mac, MAC_TABLE, MAC_TABLE_SIZE, MY_FRIEND_INDEX);
   Serial.printf("Unit owner: %s\n\n", friends[MY_FRIEND_INDEX].initials);
 
   // Initialize display
@@ -1724,26 +1721,10 @@ void handleKBTouch() {
     return;
   }
 
-  const char* rows[] = {"!@#$%^&*()", "1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"};
-  int rowY[] = {200, 245, 290, 335, 380};
-  int rowX[] = {35, 35, 35, 70, 115};
-  int keyW = 68;
-
-  for (int r = 0; r < 5; r++) {
-    if (touchY >= rowY[r] && touchY < rowY[r] + 40) {
-      int kx = touchX - rowX[r];
-      if (kx >= 0) {
-        int k = kx / keyW;
-        int len = strlen(rows[r]);
-        if (k < len) {
-          char c = rows[r][k];
-          if (!capsOn && c >= 'A' && c <= 'Z') c += 32;
-          kbInput += c;
-          drawKeyboard();
-          return;
-        }
-      }
-    }
+  char c = pure::keyboardCharAt(touchX, touchY, capsOn);
+  if (c != 0) {
+    kbInput += c;
+    drawKeyboard();
   }
 }
 
@@ -2041,10 +2022,9 @@ void showMessage(String msg) {
 }
 
 int getFriendIdx(int64_t id) {
-  for (int i = 0; i < NUM_FRIENDS; i++) {
-    if (friends[i].telegramId == id) return i;
-  }
-  return -1;
+  int64_t ids[NUM_FRIENDS];
+  for (int i = 0; i < NUM_FRIENDS; ++i) ids[i] = friends[i].telegramId;
+  return pure::getFriendIdx(id, ids, NUM_FRIENDS);
 }
 
 void broadcast(String msg) {
@@ -2056,14 +2036,7 @@ void broadcast(String msg) {
 }
 
 String sanitizeMessage(String msg) {
-  String cleaned = "";
-  for (unsigned int i = 0; i < msg.length(); i++) {
-    char c = msg.charAt(i);
-    if ((c >= 32 && c <= 126) || c == '\n' || c == '\r') {
-      cleaned += c;
-    }
-  }
-  return cleaned;
+  return String(pure::sanitizeMessage(msg.c_str()).c_str());
 }
 
 void parseSpotify(String text) {
@@ -2301,17 +2274,7 @@ void getWeather() {
 }
 
 void calcWeather() {
-  float rainInches = precipitation / 25.4;
-  wetLvl = constrain((int)(rainInches * 5), 0, 10);
-
-  if (currTemp <= 32) tmpLvl = 0;
-  else if (currTemp >= 100) tmpLvl = 10;
-  else tmpLvl = constrain((int)((currTemp - 32) / 6.8), 0, 10);
-
-  float tempDiff = abs(currTemp - 65);
-  int tempScore = (currTemp < 32 || currTemp > 100) ? 0 : constrain(10 - (int)(tempDiff / 5), 0, 10);
-  int rainPenalty = constrain((int)(rainInches * 5), 0, 10);
-  fukLvl = constrain(tempScore - rainPenalty, 0, 10);
+  pure::calcWeatherLevels(currTemp, precipitation, wetLvl, tmpLvl, fukLvl);
 }
 
 void selectDay(int dayIndex) {
@@ -2335,18 +2298,7 @@ void calcWeatherForDay(int dayIndex) {
 
   float temp = forecastHighTemp[dayIndex];
   float rain = forecastRain[dayIndex];
-  float rainInches = rain / 25.4;
-
-  wetLvl = constrain((int)(rainInches * 5), 0, 10);
-
-  if (temp <= 32) tmpLvl = 0;
-  else if (temp >= 100) tmpLvl = 10;
-  else tmpLvl = constrain((int)((temp - 32) / 6.8), 0, 10);
-
-  float tempDiff = abs(temp - 65);
-  int tempScore = (temp < 32 || temp > 100) ? 0 : constrain(10 - (int)(tempDiff / 5), 0, 10);
-  int rainPenalty = constrain((int)(rainInches * 5), 0, 10);
-  fukLvl = constrain(tempScore - rainPenalty, 0, 10);
+  pure::calcWeatherLevels(temp, rain, wetLvl, tmpLvl, fukLvl);
 
   currTemp = temp;
   precipitation = rain;
@@ -2380,20 +2332,7 @@ void readSensors() {
 // ============================================================
 
 void calcCountdown() {
-  time_t now = time(nullptr);
-  struct tm fri = tinfo;
-
-  int days = (5 - dayOfWeek + 7) % 7;
-  if (days == 0 && tinfo.tm_hour >= 15) days = 7;
-
-  fri.tm_mday += days;
-  fri.tm_hour = 15;
-  fri.tm_min = 0;
-  fri.tm_sec = 0;
-
-  secToFri = difftime(mktime(&fri), now);
-  if (secToFri < 0) secToFri = 0;
-
+  secToFri = pure::calcCountdownSeconds(time(nullptr), tinfo);
   hrsLeft = secToFri / 3600;
   minLeft = (secToFri % 3600) / 60;
   secLeft = secToFri % 60;
