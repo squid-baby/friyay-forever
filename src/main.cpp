@@ -1,32 +1,5 @@
-/*
- * =====================================================
- * FRIYAY FOREVER - Protocol 1.0 (v28 - KEYBOARD M FIX)
- * For ESP32-8048S043C (4.3" 800x480 RGB Display)
- * =====================================================
- *
- * v28 Changes from v27:
- * - Fixed WiFi password keyboard: CAPS button was overlapping/covering the M key
- * - Moved CAPS button right 1.5 key widths so M is fully visible and tappable
- *
- * v27 Changes from v26:
- * - Fixed phantom/ghost touch triggering random commits
- * - Added GT911 touch validation (point count, size, raw bounds)
- * - Added two-tap commit confirmation (tap once = "Sure?", tap again = commit)
- * - Increased commit debounce from 3s to 15s
- * - Added detailed touch diagnostics logging (raw coords, size, ghost count)
- * - Ghost touches are now logged with rejection reason for debugging
- *
- * v26 Changes from v25:
- * - Removed ~100 lines of dead code and unused variables
- * - Removed redundant compatibility aliases (using globals directly)
- * - Fixed ADS1115 crash bug (added adsOK flag)
- * - Fixed morse pattern bounds check
- * - Extracted drawCyberpunkGrid() helper function
- * - Removed unused firstName from Friend struct
- * - Removed unused albumArtReady/spotifyCodeReady flags
- * - Added magic number constants
- * - Cleaner, more maintainable code
- */
+// FRIYAY FOREVER — for ESP32-8048S043C (4.3" 800x480 RGB Display).
+// Version is set by FIRMWARE_VERSION in platformio.ini. See git log / CHANGELOG for history.
 
 #include <Arduino.h>
 #include <FastLED.h>  // MUST be before Arduino_GFX_Library to avoid RED macro conflict
@@ -47,6 +20,7 @@
 #include "qr_code.h"  // Embedded QR code image
 #include <PubSubClient.h>
 #include "ota_updates.h"  // OTA firmware updates
+#include "secrets.h"  // BOT_TOKEN, FRIYAY_SYNC_CHAT, FRIEND_TG_* (gitignored)
 
 // ============================================================
 // CONFIGURATION - CHANGE THESE FOR EACH UNIT
@@ -71,8 +45,7 @@ const MacMapping MAC_TABLE[] = {
 };
 const int MAC_TABLE_SIZE = sizeof(MAC_TABLE) / sizeof(MAC_TABLE[0]);
 
-#define BOT_TOKEN "8274851974:AAEao868jidxcQEnY8IxPK91ujLmOsA_Alg"
-#define FRIYAY_SYNC_CHAT "-3682232331"
+// BOT_TOKEN and FRIYAY_SYNC_CHAT come from secrets.h.
 
 // MQTT for commit sync (replaces broken Telegram self-read approach)
 #define MQTT_BROKER       "broker.emqx.io"
@@ -87,11 +60,11 @@ struct Friend {
 };
 
 Friend friends[] = {
-  {"NM", "Nate",   7612996805LL, false},
-  {"ST", "Simon",  7015581601LL, false},
-  {"GO", "Graeme", 8252040084LL, false},
-  {"TD", "Tony",   8293810017LL, false},
-  {"MN", "Matt",   8472668102LL, false}
+  {"NM", "Nate",   FRIEND_TG_NM, false},
+  {"ST", "Simon",  FRIEND_TG_ST, false},
+  {"GO", "Graeme", FRIEND_TG_GO, false},
+  {"TD", "Tony",   FRIEND_TG_TD, false},
+  {"MN", "Matt",   FRIEND_TG_MN, false}
 };
 #define NUM_FRIENDS 5
 
@@ -157,6 +130,18 @@ TAMC_GT911 ts = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, 800, 480)
 #define SCREEN_H 480
 #define MARGIN 15
 #define Y_OFFSET 12  // Shift entire UI down for enclosure alignment
+
+// GT911 raw-coord → screen-coord calibration. To recalibrate, tap each
+// corner, log the raw X/Y, and plug them in here. Raw X increases right-to-left,
+// raw Y increases top-to-bottom on this panel.
+#define TOUCH_RAW_X_AT_LEFT  792
+#define TOUCH_RAW_X_AT_RIGHT 325
+#define TOUCH_RAW_Y_AT_TOP   471
+#define TOUCH_RAW_Y_AT_BOT   209
+
+// Display column order is SAT..FRI (index 0..6). Arduino's tm_wday is SUN=0..SAT=6.
+// DISPLAY_DAY_MAP[col] gives the tm_wday value for column col.
+static const int DISPLAY_DAY_MAP[7] = {6, 0, 1, 2, 3, 4, 5};
 
 // Notification box
 #define NOTIF_W 305
@@ -555,8 +540,8 @@ bool checkTouch() {
           break;
         }
 
-        savedTouchX = map(rawX, 792, 325, 0, 800);
-        savedTouchY = map(rawY, 471, 209, 0, 480);
+        savedTouchX = map(rawX, TOUCH_RAW_X_AT_LEFT, TOUCH_RAW_X_AT_RIGHT, 0, SCREEN_W);
+        savedTouchY = map(rawY, TOUCH_RAW_Y_AT_TOP, TOUCH_RAW_Y_AT_BOT, 0, SCREEN_H);
         savedTouchX = constrain(savedTouchX, 0, SCREEN_W - 1);
         savedTouchY = constrain(savedTouchY, 0, SCREEN_H - 1);
 
@@ -995,8 +980,7 @@ void handleTouch() {
 
     for (int i = 0; i < 7; i++) {
       if (touchX >= x && touchX <= x + dayW) {
-        const int dayMap[] = {6, 0, 1, 2, 3, 4, 5};
-        int actualDay = dayMap[i];
+        int actualDay = DISPLAY_DAY_MAP[i];
         int daysFromToday = (actualDay - dayOfWeek + 7) % 7;
         selectDay(daysFromToday);
         return;
@@ -1185,13 +1169,12 @@ void drawNotificationBox() {
 
 void drawDays() {
   const char* days[] = {"SAT", "SUN", "MON", "TUE", "WED", "THU", "FRI"};
-  const int dayMap[] = {6, 0, 1, 2, 3, 4, 5};
 
   int dayW = (PANEL_W - 10) / 7;
   int x = MARGIN + 5;
 
   for (int i = 0; i < 7; i++) {
-    int actualDay = dayMap[i];
+    int actualDay = DISPLAY_DAY_MAP[i];
     bool isToday = (actualDay == dayOfWeek);
     int daysFromToday = (actualDay - dayOfWeek + 7) % 7;
     bool isSelected = (selectedDay >= 0 && daysFromToday == selectedDay);
@@ -2300,18 +2283,24 @@ void getWeather() {
   http.end();
 }
 
-void calcWeather() {
-  float rainInches = precipitation / 25.4;
-  wetLvl = constrain((int)(rainInches * 5), 0, 10);
+// Pure scoring: given a temperature (F) and rainfall (mm), compute ride levels.
+// Ideal ~65°F, zero rain. Score clamps to 0 outside [32, 100] and penalizes rain.
+void calcWeatherLevels(float tempF, float rainMm, int& wet, int& tmp, int& fuk) {
+  float rainInches = rainMm / 25.4f;
+  wet = constrain((int)(rainInches * 5), 0, 10);
 
-  if (currTemp <= 32) tmpLvl = 0;
-  else if (currTemp >= 100) tmpLvl = 10;
-  else tmpLvl = constrain((int)((currTemp - 32) / 6.8), 0, 10);
+  if (tempF <= 32) tmp = 0;
+  else if (tempF >= 100) tmp = 10;
+  else tmp = constrain((int)((tempF - 32) / 6.8f), 0, 10);
 
-  float tempDiff = abs(currTemp - 65);
-  int tempScore = (currTemp < 32 || currTemp > 100) ? 0 : constrain(10 - (int)(tempDiff / 5), 0, 10);
+  float tempDiff = abs(tempF - 65);
+  int tempScore = (tempF < 32 || tempF > 100) ? 0 : constrain(10 - (int)(tempDiff / 5), 0, 10);
   int rainPenalty = constrain((int)(rainInches * 5), 0, 10);
-  fukLvl = constrain(tempScore - rainPenalty, 0, 10);
+  fuk = constrain(tempScore - rainPenalty, 0, 10);
+}
+
+void calcWeather() {
+  calcWeatherLevels(currTemp, precipitation, wetLvl, tmpLvl, fukLvl);
 }
 
 void selectDay(int dayIndex) {
@@ -2335,18 +2324,7 @@ void calcWeatherForDay(int dayIndex) {
 
   float temp = forecastHighTemp[dayIndex];
   float rain = forecastRain[dayIndex];
-  float rainInches = rain / 25.4;
-
-  wetLvl = constrain((int)(rainInches * 5), 0, 10);
-
-  if (temp <= 32) tmpLvl = 0;
-  else if (temp >= 100) tmpLvl = 10;
-  else tmpLvl = constrain((int)((temp - 32) / 6.8), 0, 10);
-
-  float tempDiff = abs(temp - 65);
-  int tempScore = (temp < 32 || temp > 100) ? 0 : constrain(10 - (int)(tempDiff / 5), 0, 10);
-  int rainPenalty = constrain((int)(rainInches * 5), 0, 10);
-  fukLvl = constrain(tempScore - rainPenalty, 0, 10);
+  calcWeatherLevels(temp, rain, wetLvl, tmpLvl, fukLvl);
 
   currTemp = temp;
   precipitation = rain;

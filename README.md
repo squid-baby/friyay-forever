@@ -317,4 +317,4 @@ Flash via USB first (`pio run -t upload --upload-port /dev/cu.usbserial-XXXX`) t
 
 Created December 2025 for the Friyay crew.
 
-**Protocol 1.0 v27 - ALBUM ART FIX + MAC IDENTITY**
+Current firmware version: see `FIRMWARE_VERSION` in `platformio.ini`.
